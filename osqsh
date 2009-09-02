@@ -59,15 +59,62 @@ my $temp_file = "$tmp_dir/osqsh-$$.tmp";
 open ( TMP_FILE , ">$temp_file" ) || die "Unable to open $temp_file\n";
 chmod 0600 , $temp_file; # minimal security
 
+## optionally load tables for tab-completion
+#
+my @user_tables;
+if ( ( defined $rc_vars{'ENABLE_TABS'} ) and ( $rc_vars{'ENABLE_TABS'} eq 'on' ) ) {
+    # print "Enable tabs!\n";
+    print TMP_FILE "set head off\nselect table_name from user_tables;\nquit\n";
+    my $full_cli  = "$sqlplus_full $sqlplus_args $oracle_user/$oracle_pass \@$temp_file";
+    my @read_tabs = `$full_cli`;
+    @user_tables = grep { /\w/ } @read_tabs;
+    chomp @user_tables;
+    # print "user tabs:\n@user_tables\n";
+    truncate TMP_FILE,0;
+    seek (TMP_FILE,0,0);
+}
+
+
+## load tab-completion
+#
+my @tab_completes;
+my @nice_tabs = qw( 
+    select
+    from
+    where
+    varchar2
+    exists
+    number
+    timestamp
+    dual
+    between
+    exists
+);
+push @nice_tabs , @user_tables;
+# print "nice tabs:\n@nice_tabs\n";
+foreach my $this_tab ( @nice_tabs ) {
+    next unless ( $this_tab =~ /\w/ );
+    $this_tab =~ s/^\s//;
+    $this_tab =~ s/\s$//;
+    my $this_tab_uc = uc( $this_tab );
+    my $this_tab_lc = lc( $this_tab );
+    push @tab_completes , $this_tab_uc , $this_tab_lc;
+}
+
+
+## define tab completion
+#
 my $term = Term::ReadLine->new('OSqsh');
+my $attribs = $term->Attribs;
+$attribs->{completion_function} = sub {
+    my ($text, $line, $start) = @_;
+    return @tab_completes;
+};
+
 my $prompt = "OSQSH> ";
-# my $OUT = $term->OUT || \*STDOUT;
 my @multiline_cmd;
 my @presets;
 while ( defined ( my $command = $term->readline($prompt)) ) {
-
-    # warn $@ if $@;
-    # print $OUT $res, "\n" unless $@;
 
     if ( $command =~ /^set /i ) {
         # record settings
@@ -95,3 +142,4 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
 close TMP_FILE;
 unlink $temp_file;
 print "\n";
+
