@@ -63,17 +63,23 @@ my $term = Term::ReadLine->new('OSqsh');
 my $prompt = "OSQSH> ";
 # my $OUT = $term->OUT || \*STDOUT;
 my @multiline_cmd;
+my @presets;
 while ( defined ( my $command = $term->readline($prompt)) ) {
 
     # warn $@ if $@;
     # print $OUT $res, "\n" unless $@;
 
-    if ( $command =~ /;/ ) {
+    if ( $command =~ /^set /i ) {
+        # record settings
+        push @presets , $command;
+    } elsif ( $command =~ /;/ ) {
         $command =~ s/;.*$/;/;
         push @multiline_cmd , $command;
-        my $multiline_cmd = join ' ' , @multiline_cmd;
+        my $multiline_cmd = join ' '  , @multiline_cmd;
+        my $presets       = join "\n" , @presets;
         @multiline_cmd = ();
         # $term->addhistory($multiline_cmd) if ( $command =~ /\S/ );
+        print TMP_FILE "$presets\n";
         print TMP_FILE "$multiline_cmd\nquit\n";
         my $full_cli = "$sqlplus_full $sqlplus_args $oracle_user/$oracle_pass \@$temp_file";
         my $read_out = `$full_cli`;
