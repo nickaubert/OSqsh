@@ -1,1 +1,1 @@
-Oracle client CLI alternative to SQLPlus with Readline support
+Oracle client CLI wrapper for SQLPlus that adds Readline support
