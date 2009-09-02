@@ -1,0 +1,44 @@
+#!/usr/bin/perl
+
+use warnings;
+use strict;
+use Term::ReadLine;
+use DBI;
+
+my $oracle_user = 'nick';
+my $oracle_pass = 'nick';
+my $tmp_dir = '/dev/shm';
+my $sqlplus_full = '/u01/oracle/app/product/11.1.0/db_1/bin/sqlplus';
+my $sqlplus_args = '-L -S';
+
+my $temp_file = "$tmp_dir/osqsh.tmp";
+my $temp_outp = "$tmp_dir/osqsh_out.tmp";
+open ( TMP_FILE , ">$temp_file" ) || die "Unable to open $temp_file\n";
+
+my $term = Term::ReadLine->new('OSqsh');
+my $prompt = "OSQSH> ";
+my $OUT = $term->OUT || \*STDOUT;
+my @multiline_cmd;
+while ( defined ( my $command = $term->readline($prompt)) ) {
+
+    # warn $@ if $@;
+    # print $OUT $res, "\n" unless $@;
+
+    if ( $command =~ /;/ ) {
+        $command =~ s/;.*$/;/;
+        push @multiline_cmd , $command;
+        my $multiline_cmd = join ' ' , @multiline_cmd;
+        @multiline_cmd = ();
+        print "adding this here boy\n$multiline_cmd\n";
+        # $term->addhistory($multiline_cmd) if ( $command =~ /\S/ );
+        print TMP_FILE "$multiline_cmd\nquit\n";
+        my $full_cli = "$sqlplus_full $sqlplus_args $oracle_user/$oracle_pass \@$temp_file";
+        my $read_out = `$full_cli`;
+        truncate TMP_FILE,0;
+        seek (TMP_FILE,0,0);
+        print "$read_out\n";
+    } else {
+        push @multiline_cmd , $command;
+    }
+
+}
