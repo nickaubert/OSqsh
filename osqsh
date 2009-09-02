@@ -3,21 +3,65 @@
 use warnings;
 use strict;
 use Term::ReadLine;
-use DBI;
 
-my $oracle_user = 'nick';
-my $oracle_pass = 'nick';
-my $tmp_dir = '/dev/shm';
-my $sqlplus_full = '/u01/oracle/app/product/11.1.0/db_1/bin/sqlplus';
+## load contents of rc file if any
+#
+my %rc_vars;
+if ( defined $ENV{'HOME'} ) {
+    my $rc_file = "$ENV{'HOME'}/.osqshrc";
+
+    if ( -f $rc_file ) {
+        open ( RCFILE , "$rc_file" ) || die "Unable to open $rc_file\n";
+        while (<RCFILE>) {
+            chomp;                  # no newline
+            s/#.*//;                # no comments
+            s/^\s+//;               # no leading white
+            s/\s+$//;               # no trailing white
+            next unless length;     # anything left?
+            my ($var, $value) = split(/\s*=\s*/, $_, 2);
+            $rc_vars{$var} = $value;
+        }
+    }
+}
+
+## assign variables (environment has precedence over rc file)
+#
+my @need_oravars = qw( 
+    ORACLE_HOME
+    ORACLE_SID
+    ORACLE_USER
+    ORACLE_PASS
+    TMP_DIR
+);
+foreach my $this_oravar ( @need_oravars ) {
+	if ( defined $ENV{"$this_oravar"} ) {
+	    # good
+	} elsif ( defined $rc_vars{$this_oravar} ) {
+	    $ENV{"$this_oravar"} = $rc_vars{$this_oravar};
+	} else {
+	    print "Enter $this_oravar: ";
+        my $input_var = <STDIN>;
+        chomp $input_var;
+        $ENV{"$this_oravar"} = $input_var;
+	}
+}
+
+my $oracle_home = $ENV{'ORACLE_HOME'};
+my $oracle_user = $ENV{'ORACLE_USER'};
+my $oracle_pass = $ENV{'ORACLE_PASS'};
+my $tmp_dir     = $ENV{'TMP_DIR'};
+my $sqlplus_full = "$oracle_home/bin/sqlplus";
 my $sqlplus_args = '-L -S';
+if ( ! -f $sqlplus_full ) { die "No sqlplus at $sqlplus_full\n"; }
+if ( ! -x $sqlplus_full ) { die "Cannot execute $sqlplus_full\n"; }
 
-my $temp_file = "$tmp_dir/osqsh.tmp";
-my $temp_outp = "$tmp_dir/osqsh_out.tmp";
+my $temp_file = "$tmp_dir/osqsh-$$.tmp";
 open ( TMP_FILE , ">$temp_file" ) || die "Unable to open $temp_file\n";
+chmod 0600 , $temp_file; # minimal security
 
 my $term = Term::ReadLine->new('OSqsh');
 my $prompt = "OSQSH> ";
-my $OUT = $term->OUT || \*STDOUT;
+# my $OUT = $term->OUT || \*STDOUT;
 my @multiline_cmd;
 while ( defined ( my $command = $term->readline($prompt)) ) {
 
@@ -29,7 +73,6 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
         push @multiline_cmd , $command;
         my $multiline_cmd = join ' ' , @multiline_cmd;
         @multiline_cmd = ();
-        print "adding this here boy\n$multiline_cmd\n";
         # $term->addhistory($multiline_cmd) if ( $command =~ /\S/ );
         print TMP_FILE "$multiline_cmd\nquit\n";
         my $full_cli = "$sqlplus_full $sqlplus_args $oracle_user/$oracle_pass \@$temp_file";
@@ -42,3 +85,7 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
     }
 
 }
+
+close TMP_FILE;
+unlink $temp_file;
+print "\n";
