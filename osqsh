@@ -1,5 +1,14 @@
 #!/usr/bin/perl
 
+##########################################################################
+# Oracle client CLI wrapper for SQLPlus that adds Readline support.
+#
+# This isn't likely to be any kind of full replacement for SQLPlus,
+# but readline support should make it more user friendly (if a modern
+# CLI is your friend).
+#
+##########################################################################
+
 use warnings;
 use strict;
 use Term::ReadLine;
