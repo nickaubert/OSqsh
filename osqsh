@@ -6,25 +6,9 @@ use Term::ReadLine;
 
 ## load contents of rc file if any
 #
-my %rc_vars;
-if ( defined $ENV{'HOME'} ) {
-    my $rc_file = "$ENV{'HOME'}/.osqshrc";
+my %rc_vars = &load_rcfile;
 
-    if ( -f $rc_file ) {
-        open ( RCFILE , "$rc_file" ) || die "Unable to open $rc_file\n";
-        while (<RCFILE>) {
-            chomp;                  # no newline
-            s/#.*//;                # no comments
-            s/^\s+//;               # no leading white
-            s/\s+$//;               # no trailing white
-            next unless length;     # anything left?
-            my ($var, $value) = split(/\s*=\s*/, $_, 2);
-            $rc_vars{$var} = $value;
-        }
-    }
-}
-
-## assign variables (environment has precedence over rc file)
+## assign needed variables (environment has precedence over rc file)
 #
 my @need_oravars = qw( 
     ORACLE_HOME
@@ -33,18 +17,7 @@ my @need_oravars = qw(
     ORACLE_PASS
     TMP_DIR
 );
-foreach my $this_oravar ( @need_oravars ) {
-	if ( defined $ENV{"$this_oravar"} ) {
-	    # good
-	} elsif ( defined $rc_vars{$this_oravar} ) {
-	    $ENV{"$this_oravar"} = $rc_vars{$this_oravar};
-	} else {
-	    print "Enter $this_oravar: ";
-        my $input_var = <STDIN>;
-        chomp $input_var;
-        $ENV{"$this_oravar"} = $input_var;
-	}
-}
+&load_neededvars;
 
 my $oracle_home = $ENV{'ORACLE_HOME'};
 my $oracle_user = $ENV{'ORACLE_USER'};
@@ -62,24 +35,17 @@ chmod 0600 , $temp_file; # minimal security
 ## optionally load tables for tab-completion
 #
 my @user_tables;
-if ( ( defined $rc_vars{'ENABLE_TABS'} ) and ( $rc_vars{'ENABLE_TABS'} eq 'on' ) ) {
-    # print "Enable tabs!\n";
-    print TMP_FILE "set head off\nselect table_name from user_tables;\nquit\n";
-    my $full_cli  = "$sqlplus_full $sqlplus_args $oracle_user/$oracle_pass \@$temp_file";
-    my @read_tabs = `$full_cli`;
-    @user_tables = grep { /\w/ } @read_tabs;
-    chomp @user_tables;
-    # print "user tabs:\n@user_tables\n";
-    truncate TMP_FILE,0;
-    seek (TMP_FILE,0,0);
+if ( ( defined $rc_vars{'ENABLE_TABS'} ) and ( $rc_vars{'ENABLE_TABS'} =~ /on|yes|true/i ) ) {
+    @user_tables = &load_usertables;
 }
-
 
 ## load tab-completion
 #
-my @tab_completes;
 my @nice_tabs = qw( 
     select
+    insert
+    into
+    create
     from
     where
     varchar2
@@ -91,34 +57,36 @@ my @nice_tabs = qw(
     exists
 );
 push @nice_tabs , @user_tables;
-# print "nice tabs:\n@nice_tabs\n";
-foreach my $this_tab ( @nice_tabs ) {
-    next unless ( $this_tab =~ /\w/ );
-    $this_tab =~ s/^\s//;
-    $this_tab =~ s/\s$//;
-    my $this_tab_uc = uc( $this_tab );
-    my $this_tab_lc = lc( $this_tab );
-    push @tab_completes , $this_tab_uc , $this_tab_lc;
-}
+my @tab_completes = &load_tabs(@nice_tabs);
+# print "nice tabs:\n@tab_completes\n";
 
 
-## define tab completion
+## set up readline with tab completion
 #
+my $prompt = "OSQSH> ";
 my $term = Term::ReadLine->new('OSqsh');
 my $attribs = $term->Attribs;
-$attribs->{completion_function} = sub {
-    my ($text, $line, $start) = @_;
-    return @tab_completes;
-};
+$attribs->{completion_function} = sub { return @tab_completes; };
 
-my $prompt = "OSQSH> ";
+
+## now run the prompt
+#
 my @multiline_cmd;
 my @presets;
 while ( defined ( my $command = $term->readline($prompt)) ) {
 
-    if ( $command =~ /^set /i ) {
-        # record settings
+    ## quit (^D also works)
+    #
+    if ( $command =~ /^quit\W*/i ) {
+        exit 0;
+
+    ## record settings
+    #
+    } elsif ( $command =~ /^set /i ) {
         push @presets , $command;
+
+    ## any line that contains a semicolon will be executed (anything after the semicolon is ignored)
+    #
     } elsif ( $command =~ /;/ ) {
         $command =~ s/;.*$/;/;
         push @multiline_cmd , $command;
@@ -133,9 +101,16 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
         truncate TMP_FILE,0;
         seek (TMP_FILE,0,0);
         print "$read_out\n";
+
+    ## anything else is considered a multiline command
+    #
     } else {
         push @multiline_cmd , $command;
     }
+
+    ## show the buffer if anythings in it
+    #
+    print "@multiline_cmd\n";
 
 }
 
@@ -143,3 +118,75 @@ close TMP_FILE;
 unlink $temp_file;
 print "\n";
 
+
+##########################################################################
+# Subroutines
+##########################################################################
+sub load_rcfile {
+
+    my %local_rc_vars;
+    if ( defined $ENV{'HOME'} ) {
+        my $rc_file = "$ENV{'HOME'}/.osqshrc";
+    
+        if ( -f $rc_file ) {
+            open ( RCFILE , "$rc_file" ) || die "Unable to open $rc_file\n";
+            while (<RCFILE>) {
+                chomp;              # no newline
+                s/#.*//;            # no comments
+                s/^\s+//;           # no leading white
+                s/\s+$//;           # no trailing white
+                next unless length; # anything left?
+                my ($var, $value) = split(/\s*=\s*/, $_, 2);
+                $local_rc_vars{$var} = $value;
+            }
+        }
+    }
+
+    return %local_rc_vars;
+
+}
+
+sub load_neededvars {
+    foreach my $this_oravar ( @need_oravars ) {
+        if ( defined $ENV{"$this_oravar"} ) {
+            # good
+        } elsif ( defined $rc_vars{$this_oravar} ) {
+            $ENV{"$this_oravar"} = $rc_vars{$this_oravar};
+        } else {
+            print "Enter $this_oravar: ";
+            my $input_var = <STDIN>;
+            chomp $input_var;
+            $ENV{"$this_oravar"} = $input_var;
+        }
+    }
+}
+
+sub load_usertables {
+
+    my @load_tables;
+    # print "Enable tabs!\n";
+    print TMP_FILE "set head off\nselect table_name from user_tables;\nquit\n";
+    my $full_cli  = "$sqlplus_full $sqlplus_args $oracle_user/$oracle_pass \@$temp_file";
+    my @read_tabs = `$full_cli`;
+    @load_tables = grep { /\w/ } @read_tabs;
+    chomp @user_tables;
+    # print "user tabs:\n@user_tables\n";
+    truncate TMP_FILE,0;
+    seek (TMP_FILE,0,0);
+    return @load_tables;
+
+}
+
+sub load_tabs {
+    my @these_words = @_;
+    my @add_tabs;
+    foreach my $this_tab ( @these_words ) {
+        next unless ( $this_tab =~ /\w/ );
+        $this_tab =~ s/^\s//;
+        $this_tab =~ s/\s$//;
+        my $this_tab_uc = uc( $this_tab );
+        my $this_tab_lc = lc( $this_tab );
+        push @add_tabs , $this_tab_uc , $this_tab_lc;
+    }
+    return @add_tabs;
+}
