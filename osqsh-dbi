@@ -18,16 +18,18 @@ use DBD::Oracle;
 #
 my %rc_vars = &load_rcfile;
 
-## assign needed variables (environment has precedence over rc file)
+## assign needed variables 
+#  environment has precedence over rc file
+#  load_neededvars subroutine loads directly into %ENV
 #
 my @need_oravars = qw( 
     ORACLE_HOME
     ORACLE_SID
     ORACLE_USER
     ORACLE_PASS
-    TMP_DIR
+    TNS_ADMIN
 );
-&load_neededvars;
+&load_neededvars ( @need_oravars );
 
 ## minimum column width
 #  needs to be ensmartened
@@ -40,23 +42,29 @@ my $min_col_width = 15;
 my @presets = &add_rc_settings(\%rc_vars);
 
 my $oracle_home = $ENV{'ORACLE_HOME'};
+my $oracle_sid  = $ENV{'ORACLE_SID' };
 my $oracle_user = $ENV{'ORACLE_USER'};
 my $oracle_pass = $ENV{'ORACLE_PASS'};
-my $tmp_dir     = $ENV{'TMP_DIR'};
+# my $tmp_dir     = $ENV{'TMP_DIR'};
 my $sqlplus_full = "$oracle_home/bin/sqlplus";
 my $sqlplus_args = '-L -S';
 if ( ! -f $sqlplus_full ) { die "No sqlplus at $sqlplus_full\n"; }
 if ( ! -x $sqlplus_full ) { die "Cannot execute $sqlplus_full\n"; }
 
-my $temp_file = "$tmp_dir/osqsh-$$.tmp";
-open ( TMP_FILE , ">$temp_file" ) || die "Unable to open $temp_file\n";
-chmod 0600 , $temp_file; # minimal security
+## connect to database
+#
+my $dbh = DBI->connect( "dbi:Oracle:$oracle_sid" , "$oracle_user" , "$oracle_pass" ) || die( $DBI::errstr . "\n" );
+$dbh->{AutoCommit}    = 0;
+$dbh->{RaiseError}    = 1;
+$dbh->{ora_check_sql} = 0;
+$dbh->{RowCacheSize}  = 16;
+
 
 ## optionally load tables for tab-completion
 #
 my @user_tables;
 if ( ( defined $rc_vars{'ENABLE_TABS'} ) and ( $rc_vars{'ENABLE_TABS'} =~ /on|yes|true/i ) ) {
-    @user_tables = &load_usertables;
+    @user_tables = &load_usertables( $dbh );
 }
 
 ## load tab-completion
@@ -80,17 +88,6 @@ my @nice_tabs = qw(
 );
 push @nice_tabs , @user_tables;
 my @tab_completes = &load_tabs(@nice_tabs);
-
-
-
-$ENV{TNS_ADMIN} = '/home/nick/OSqsh';
-
-my $db = DBI->connect( "dbi:Oracle:orcl" , "nick" , "nick" ) || die( $DBI::errstr . "\n" );
-$db->{AutoCommit}    = 0;
-$db->{RaiseError}    = 1;
-$db->{ora_check_sql} = 0;
-$db->{RowCacheSize}  = 16;
- 
 
 ## set up readline with tab completion
 #
@@ -121,7 +118,7 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
     #
     } elsif ( $command =~ /^tabs (\w+)/i ) {
         my $load_table = $1;
-        my @column_headers = &get_headers($load_table);
+        my @column_headers = &get_headers( $dbh , $load_table );
         push @nice_tabs , @column_headers;
         my @tab_completes = &load_tabs(@nice_tabs);
         $attribs->{completion_function} = sub { return @tab_completes; };
@@ -139,10 +136,10 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
         # $term->addhistory($multiline_cmd) if ( $command =~ /\S/ );
 
         $multiline_cmd =~ s/;.*$//;
-        $sth = $db->prepare($multiline_cmd);
+        $sth = $dbh->prepare($multiline_cmd);
         $sth->execute();
 
-        @column_stuff  = &get_column_data;
+        @column_stuff  = &get_column_data ( $dbh , $sth );
         my $header_string = &get_header;
         print "$header_string";
 
@@ -179,11 +176,9 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
 
 }
 
-close TMP_FILE;
-unlink $temp_file;
 print "\n";
 END {
-    $db->disconnect if defined($db);
+    $dbh->disconnect if defined($dbh);
 }
 
 
@@ -224,7 +219,8 @@ sub load_rcfile {
 }
 
 sub load_neededvars {
-    foreach my $this_oravar ( @need_oravars ) {
+    my @load_these = @_;
+    foreach my $this_oravar ( @load_these ) {
         if ( defined $ENV{"$this_oravar"} ) {
             # good
         } elsif ( defined $rc_vars{$this_oravar} ) {
@@ -240,14 +236,10 @@ sub load_neededvars {
 
 sub load_usertables {
 
-    my @load_tables;
-    print TMP_FILE "set head off\nselect table_name from user_tables;\nquit\n";
-    my $full_cli  = "$sqlplus_full $sqlplus_args $oracle_user/$oracle_pass \@$temp_file";
-    my @read_tabs = `$full_cli`;
-    @load_tables = grep { /\w/ } @read_tabs;
-    chomp @user_tables;
-    truncate TMP_FILE,0;
-    seek (TMP_FILE,0,0);
+    my $dbh_ref = shift;
+    my $cmd = "select table_name from user_tables";
+    my $usertables_ref = $dbh->selectall_arrayref( $cmd, { Slice => {} });
+    my @load_tables = map { $_ = $_->{TABLE_NAME}; } @$usertables_ref;
     return @load_tables;
 
 }
@@ -268,18 +260,11 @@ sub load_tabs {
 
 sub get_headers {
 
-    my $read_table = uc(shift);
-    print TMP_FILE "
-        set head off
-        set feedback off
-        select column_name from ALL_COL_COMMENTS where table_name = '$read_table';
-        quit\n";
-    my $full_cli  = "$sqlplus_full $sqlplus_args $oracle_user/$oracle_pass \@$temp_file";
-    my @read_tabs = `$full_cli`;
-    my @load_columns = grep { /\w/ } @read_tabs;
-    chomp @load_columns;
-    truncate TMP_FILE,0;
-    seek (TMP_FILE,0,0);
+    my ( $dbh_ref , $read_table ) = @_;
+    $read_table = uc($read_table);
+    my $cmd = "select COLUMN_NAME from ALL_COL_COMMENTS where table_name = '$read_table'";
+    my $columnnames_ref = $dbh->selectall_arrayref( $cmd, { Slice => {} });
+    my @load_columns = map { $_ = $_->{COLUMN_NAME}; } @$columnnames_ref;
     return @load_columns;
 
 }
@@ -302,10 +287,11 @@ sub get_column_data {
     ## collect column data
     #  there MUST be a better way to do this
     #
-    my @type_names   = map { scalar $db->type_info($_)->{TYPE_NAME} } @{ $sth->{TYPE} };
-    my @column_names = @{ $sth->{NAME}      };
-    my @precision    = @{ $sth->{PRECISION} };
-    my @scale        = @{ $sth->{SCALE}     };
+    my ( $dbh_ref , $sth_ref ) = @_;
+    my @type_names   = map { scalar $dbh_ref->type_info($_)->{TYPE_NAME} } @{ $sth_ref->{TYPE} };
+    my @column_names = @{ $sth_ref->{NAME}      };
+    my @precision    = @{ $sth_ref->{PRECISION} };
+    my @scale        = @{ $sth_ref->{SCALE}     };
     my @column_stuff;
     my $count_columns = 0;
     foreach my $this_col_name ( @column_names ) {
