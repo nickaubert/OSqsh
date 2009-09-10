@@ -136,9 +136,6 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
 
         $multiline_cmd =~ s/;.*$//;
 
-        # my $sql_display = &return_sql_command( $dbh , $multiline_cmd );
-        # print "$sql_display";
-
         my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh , $multiline_cmd );
         my @sql_result = @$result_ref;
         my @sql_result_columninfo = @$result_columninfo_ref;
@@ -376,26 +373,24 @@ sub format_result {
     my $header_string = &get_header( @column_info );
     $display_result .= "$header_string";
 
-
-    my @row = ();
-    my $rv = "a zillion";
-    foreach my $this_thing ( @$out_ref ) {
+    my $rv = 0;
+    foreach my $this_row ( @$out_ref ) {
         my $count_columns = 0;
-        foreach my $this_row ( @$this_thing ) {
+        foreach my $this_column ( @$this_row ) {
     
             my $width = ( $column_info[$count_columns]{'precision'} > $min_col_width )
                 ? $column_info[$count_columns]{'precision'}
                 : $min_col_width;
     
-            if ( defined $this_row ) {
-                $display_result .= sprintf( "%-"."$width"."s", $this_row);
+            if ( defined $this_column ) {
+                $display_result .= sprintf( "%-"."$width"."s", $this_column);
             } else {
                 $display_result .= sprintf( "%-"."$width"."s", '' );
             }
             $display_result .=  " ";
             $count_columns++;
         }
-        $rv = "zillion";
+        $rv++;
         $display_result .= "\n";
     }
     $display_result .= "\n$rv rows selected.\n\n";
