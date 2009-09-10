@@ -101,7 +101,6 @@ $attribs->{completion_function} = sub { return @tab_completes; };
 #
 my @multiline_cmd;
 my $sth;
-my @column_stuff;
 while ( defined ( my $command = $term->readline($prompt)) ) {
 
     ## quit (^D also works)
@@ -118,7 +117,7 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
     #
     } elsif ( $command =~ /^tabs (\w+)/i ) {
         my $load_table = $1;
-        my @column_headers = &get_headers( $dbh , $load_table );
+        my @column_headers = &get_col_headers( $dbh , $load_table );
         push @nice_tabs , @column_headers;
         my @tab_completes = &load_tabs(@nice_tabs);
         $attribs->{completion_function} = sub { return @tab_completes; };
@@ -136,31 +135,15 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
         # $term->addhistory($multiline_cmd) if ( $command =~ /\S/ );
 
         $multiline_cmd =~ s/;.*$//;
-        $sth = $dbh->prepare($multiline_cmd);
-        $sth->execute();
 
-        @column_stuff  = &get_column_data ( $dbh , $sth );
-        my $header_string = &get_header;
-        print "$header_string";
+        # my $sql_display = &return_sql_command( $dbh , $multiline_cmd );
+        # print "$sql_display";
 
-        my $rv;
-        while ( my @row = $sth->fetchrow_array() ) {
-            my $count_columns = 0;
-            foreach my $this_row (@row) {
-        
-                my $width = ( $column_stuff[$count_columns]{'precision'} > $min_col_width )
-                    ? $column_stuff[$count_columns]{'precision'}
-                    : $min_col_width;
-        
-                my $sprinf_sucks = "%-" . "$width" . "s";
-                print sprintf( "%-"."$width"."s", $this_row) ,  " ";
-                $count_columns++;
-            }
-            $rv = $sth->rows;
-            print "\n";
-        }
-        print "$rv rows selected.\n";
-
+        my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh , $multiline_cmd );
+        my @sql_result = @$result_ref;
+        my @sql_result_columninfo = @$result_columninfo_ref;
+        my $result_out = &format_result( \@sql_result , \@sql_result_columninfo );
+        print "$result_out";
 
     ## anything else is considered a multiline command
     #
@@ -258,7 +241,7 @@ sub load_tabs {
     return @add_tabs;
 }
 
-sub get_headers {
+sub get_col_headers {
 
     my ( $dbh_ref , $read_table ) = @_;
     $read_table = uc($read_table);
@@ -308,9 +291,12 @@ sub get_column_data {
 }
 
 sub get_header {
+
+    my @column_stuff = @_;
     my $header = '';
     my $count_columns = 0;
     my @separators;
+    $header .= "\n";
     foreach my $this_column ( @column_stuff ) {
 
         my $width = ( $column_stuff[$count_columns]{'precision'} > $min_col_width )
@@ -331,3 +317,88 @@ sub get_header {
     return $header;
 }
 
+sub return_sql_command_OLD {
+
+    my ( $dbh_ref , $sql_cmd ) = @_;
+    my $sth_ref = $dbh_ref->prepare($sql_cmd);
+    $sth_ref->execute();
+
+    my $display_result = '';
+    my @column_info = &get_column_data ( $dbh_ref , $sth_ref );
+    my $header_string = &get_header( @column_info );
+    $display_result .= "$header_string";
+
+    my $rv;
+    while ( my @row = $sth_ref->fetchrow_array() ) {
+        my $count_columns = 0;
+        foreach my $this_row (@row) {
+    
+            my $width = ( $column_info[$count_columns]{'precision'} > $min_col_width )
+                ? $column_info[$count_columns]{'precision'}
+                : $min_col_width;
+    
+            if ( defined $this_row ) {
+                $display_result .= sprintf( "%-"."$width"."s", $this_row);
+            } else {
+                $display_result .= sprintf( "%-"."$width"."s", '' );
+            }
+            $display_result .=  " ";
+            $count_columns++;
+        }
+        $rv = $sth_ref->rows;
+        $display_result .= "\n";
+    }
+    $display_result .= "\n$rv rows selected.\n\n";
+
+    return $display_result;
+}
+
+sub run_sql_command {
+
+    my ( $dbh_ref , $sql_cmd ) = @_;
+
+    my $sth_ref = $dbh_ref->prepare($sql_cmd);
+    my $ary_ref = $dbh->selectall_arrayref($sql_cmd);
+    my @ary_info = &get_column_data ( $dbh_ref , $sth_ref );
+    my $ary_info_ref = \@ary_info;
+
+    return ( $ary_ref , $ary_info_ref );
+
+}
+
+sub format_result {
+
+    my ( $out_ref , $out_info_ref ) = @_;
+    my $display_result = '';
+
+    my @column_info = @$out_info_ref;
+
+    my $header_string = &get_header( @column_info );
+    $display_result .= "$header_string";
+
+
+    my @row = ();
+    my $rv = "a zillion";
+    foreach my $this_thing ( @$out_ref ) {
+        my $count_columns = 0;
+        foreach my $this_row ( @$this_thing ) {
+    
+            my $width = ( $column_info[$count_columns]{'precision'} > $min_col_width )
+                ? $column_info[$count_columns]{'precision'}
+                : $min_col_width;
+    
+            if ( defined $this_row ) {
+                $display_result .= sprintf( "%-"."$width"."s", $this_row);
+            } else {
+                $display_result .= sprintf( "%-"."$width"."s", '' );
+            }
+            $display_result .=  " ";
+            $count_columns++;
+        }
+        $rv = "zillion";
+        $display_result .= "\n";
+    }
+    $display_result .= "\n$rv rows selected.\n\n";
+
+    return $display_result;
+}
