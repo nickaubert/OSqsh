@@ -44,49 +44,33 @@ $dbh->{ora_check_sql} = 0;
 $dbh->{RowCacheSize}  = 16;
 
 
-## optionally load tables for tab-completion
-#
-my @user_tables;
-if ( ( defined $rc_vars{'ENABLE_TABS'} ) and ( $rc_vars{'ENABLE_TABS'} =~ /on|yes|true/i ) ) {
-    @user_tables = &load_usertables( $dbh );
-}
-
-## load tab-completion
-#
-my @nice_tabs = qw( 
-    select
-    describe
-    tabs
-    insert
-    into
-    create
-    from
-    where
-    varchar2
-    exists
-    number
-    timestamp
-    dual
-    between
-    exit
-    quit
-    exists
-);
-push @nice_tabs , @user_tables;
-my @tab_completes = &load_tabs(@nice_tabs);
-
 ## set up readline with tab completion
 #
-my $prompt = "OSQSH> ";
 my $term = Term::ReadLine->new('OSqsh');
-my $attribs = $term->Attribs;
-$attribs->{completion_function} = sub { return @tab_completes; };
+
+## load miscellaneous tab-completion words
+#
+my @nice_tabs = qw( 
+    select insert into create from where exists between
+    varchar2 number timestamp 
+    dual 
+    describe exit quit
+);
+
+## optionally load tables for tab-completion
+#
+if ( ( defined $rc_vars{'ENABLE_TABS'} ) and ( $rc_vars{'ENABLE_TABS'} =~ /on|yes|true/i ) ) {
+    my @user_tables = &load_usertables( $dbh );
+    push @nice_tabs , @user_tables;
+}
+my @tab_completes = &load_tabs( $term , @nice_tabs );
 
 
 ## now run the prompt
 #
 my @multiline_cmd;
 my $sth;
+my $prompt = "OSQSH> ";
 while ( defined ( my $command = $term->readline($prompt)) ) {
 
     ## quit (^D also works)
@@ -94,46 +78,51 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
     if ( $command =~ /^(quit|exit)\W*/i ) {
         exit 0;
 
-    ## record settings
-    #
-    # } elsif ( $command =~ /^set /i ) {
-    #     push @presets , $command;
-
     ## reproduce DESCRIBE sqlplus command
     #  add table column headers for tab completion
     #
-    } elsif ( $command =~ /^des(c|cr|cri|crib|cribe) (\w+)/i ) {
-        my $load_table = uc($2);
-        my @column_headers = &get_col_headers( $dbh , $load_table );
-        push @nice_tabs , @column_headers;
-        my @tab_completes = &load_tabs(@nice_tabs);
-        $attribs->{completion_function} = sub { return @tab_completes; };
+    } elsif ( $command =~ /^des(c|cr|cri|crib|cribe)\s+(.*)$/i ) {
 
-        my $desc_cmd = "
-            SELECT  COLUMN_NAME, 
-                    NULLABLE, 
-                    DATA_TYPE, 
-                    CHAR_LENGTH, 
-                    DATA_PRECISION
-            FROM    USER_TAB_COLUMNS
-            WHERE   TABLE_NAME = '$load_table'";
-
-        # print "here is the SQL dude\n$desc_cmd\n\nwtf?\nd";
-        my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh , $desc_cmd );
-        my $result_out = &format_result( $result_ref , $result_columninfo_ref );
-        print "$result_out";
+        my @user_tables = &load_usertables( $dbh );
+        my @arguments = split /\s+/ , $2;
+        foreach my $this_argument ( @arguments ) {
+            last if ( $this_argument eq ';' );
+            # print "foreach $this_argument\n";
+            if ( grep /^$this_argument$/i , @user_tables ) {
+                # print "has grep: $this_argument\n";
+                my @desc_return = &desc_table( $dbh , $this_argument );
+                my $display_desc = shift ( @desc_return );
+                push @nice_tabs , @desc_return;
+                my @tab_completes = &load_tabs( $term , @nice_tabs);
+                print "$display_desc";
+            } else {
+                print "No such table $this_argument in USER_TABLES\n";
+            }
+        }
 
     ## any line that contains a semicolon will be executed (anything after the semicolon is ignored)
     #
     } elsif ( $command =~ /;/ ) {
 
-        $command =~ s/;.*$/;/;
-        push @multiline_cmd , $command;
-        my $full_cmd = join ' '  , @multiline_cmd;
+        ## strip semicolon and anything after
+        #
+        $command =~ s/;.*$//;
+
+        my $full_cmd;
+        if ( @multiline_cmd > 0 ) {
+            print "YES!\n";
+            push @multiline_cmd , $command;
+            $full_cmd = join ' '  , @multiline_cmd;
+            $term->addhistory("$full_cmd;");
+            @multiline_cmd = ();
+        } else {
+            $full_cmd = $command;
+        }
+
+        print "Gonna SQL:\n$full_cmd\n";
+
         # my $presets       = join "\n" , @presets;
-        @multiline_cmd = ();
-        # $term->addhistory($multiline_cmd) if ( $command =~ /\S/ );
-        $full_cmd =~ s/;.*$//;
+        # $full_cmd =~ s/;.*$//;
 
         my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh , $full_cmd );
         my $result_out = &format_result( $result_ref , $result_columninfo_ref );
@@ -148,7 +137,8 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
     ## show the buffer if anythings in it
     #
     if ( @multiline_cmd > 0 ) {
-        print "@multiline_cmd\n";
+        my $display_multiline_cmd = join "\n       " , @multiline_cmd;
+        print "       $display_multiline_cmd\n";
     }
 
 }
@@ -219,35 +209,29 @@ sub load_neededvars {
 
 sub load_usertables {
 
-    my $dbh_ref = shift;
-    my $cmd = "select table_name from user_tables";
-    my $usertables_ref = $dbh->selectall_arrayref( $cmd, { Slice => {} });
-    my @load_tables = map { $_ = $_->{TABLE_NAME}; } @$usertables_ref;
+    my ( $dbh_ref ) = @_;
+    my $cmd = "SELECT TABLE_NAME FROM USER_TABLES";
+    my @load_tables = map { $_ = $_->{TABLE_NAME}; } @{ $dbh->selectall_arrayref( $cmd, { Slice => {} }) };
     return @load_tables;
 
 }
 
 sub load_tabs {
-    my @these_words = @_;
-    my @add_tabs;
-    foreach my $this_tab ( @these_words ) {
-        next unless ( $this_tab =~ /\w/ );
-        $this_tab =~ s/^\s//;
-        $this_tab =~ s/\s$//;
-        my $this_tab_uc = uc( $this_tab );
-        my $this_tab_lc = lc( $this_tab );
-        push @add_tabs , $this_tab_uc , $this_tab_lc;
-    }
-    return @add_tabs;
+
+    my ( $term_ref , @these_words ) = @_;
+
+    my %lc_keys;
+    map { $lc_keys{lc($_)} = '' } @these_words;
+    my @tab_words = ( keys %lc_keys , map { uc($_) } keys %lc_keys );
+    $term_ref->Attribs->{completion_function} = sub { return @tab_words; };
+    return @tab_words;
 }
 
 sub get_col_headers {
 
     my ( $dbh_ref , $read_table ) = @_;
-    $read_table = uc($read_table);
-    my $cmd = "select COLUMN_NAME from ALL_COL_COMMENTS where table_name = '$read_table'";
-    my $columnnames_ref = $dbh->selectall_arrayref( $cmd, { Slice => {} });
-    my @load_columns = map { $_ = $_->{COLUMN_NAME}; } @$columnnames_ref;
+    my $cmd = uc("SELECT COLUMN_NAME FROM ALL_COL_COMMENTS WHERE TABLE_NAME = '$read_table'");
+    my @load_columns = map { $_ = $_->{COLUMN_NAME}; } @{ $dbh->selectall_arrayref( $cmd, { Slice => {} })};
     return @load_columns;
 
 }
@@ -384,4 +368,27 @@ sub format_result {
     $display_result .= "\n$rv rows selected.\n\n";
 
     return $display_result;
+}
+
+sub desc_table {
+
+    my ( $dbh_ref , $table_name ) = @_;
+
+    my $desc_cmd = uc("
+        SELECT  COLUMN_NAME, 
+                NULLABLE, 
+                DATA_TYPE, 
+                CHAR_LENGTH, 
+                DATA_PRECISION
+        FROM    USER_TAB_COLUMNS
+        WHERE   TABLE_NAME = '$table_name'
+    ");
+
+    my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh_ref , $desc_cmd );
+    my $result_out = &format_result( $result_ref , $result_columninfo_ref );
+
+    my @column_headers = &get_col_headers( $dbh , $table_name );
+
+    return ( $result_out , @column_headers );
+
 }
