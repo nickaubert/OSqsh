@@ -280,6 +280,13 @@ sub get_column_data {
         $column_stuff[$count_columns]{'precision'} = $precision[$count_columns];
         $column_stuff[$count_columns]{'scale'}     = $scale[$count_columns];
         $column_stuff[$count_columns]{'scale2'}    = $scale[$count_columns];
+        $column_stuff[$count_columns]{'maxwidth'}  = length($this_col_name); # will may be updated below
+
+        if ( grep m/$type_names[$count_columns]/ , qw( DECIMAL DATE ) ) {
+            $column_stuff[$count_columns]{'justify'} = 'right';
+        } else {
+            $column_stuff[$count_columns]{'justify'} = 'left';
+        }
         $count_columns++;
     }
 
@@ -296,9 +303,10 @@ sub get_header {
     $header .= "\n";
     foreach my $this_column ( @column_stuff ) {
 
-        my $width = ( $column_stuff[$count_columns]{'precision'} > $min_col_width )
-            ? $column_stuff[$count_columns]{'precision'}
-            : $min_col_width;
+        my $width = $column_stuff[$count_columns]{'maxwidth'};
+        # my $width = ( $column_stuff[$count_columns]{'precision'} > $min_col_width )
+        #     ? $column_stuff[$count_columns]{'precision'}
+        #     : $min_col_width;
 
         for ( my $i = 1 ; $i <= $width ; $i++ ) { $separators[$count_columns] .= "-"; }
 
@@ -312,42 +320,6 @@ sub get_header {
     $header .= "\n";
 
     return $header;
-}
-
-sub return_sql_command_OLD {
-
-    my ( $dbh_ref , $sql_cmd ) = @_;
-    my $sth_ref = $dbh_ref->prepare($sql_cmd);
-    $sth_ref->execute();
-
-    my $display_result = '';
-    my @column_info = &get_column_data ( $dbh_ref , $sth_ref );
-    my $header_string = &get_header( @column_info );
-    $display_result .= "$header_string";
-
-    my $rv;
-    while ( my @row = $sth_ref->fetchrow_array() ) {
-        my $count_columns = 0;
-        foreach my $this_row (@row) {
-    
-            my $width = ( $column_info[$count_columns]{'precision'} > $min_col_width )
-                ? $column_info[$count_columns]{'precision'}
-                : $min_col_width;
-    
-            if ( defined $this_row ) {
-                $display_result .= sprintf( "%-"."$width"."s", $this_row);
-            } else {
-                $display_result .= sprintf( "%-"."$width"."s", '' );
-            }
-            $display_result .=  " ";
-            $count_columns++;
-        }
-        $rv = $sth_ref->rows;
-        $display_result .= "\n";
-    }
-    $display_result .= "\n$rv rows selected.\n\n";
-
-    return $display_result;
 }
 
 sub run_sql_command {
@@ -370,6 +342,22 @@ sub format_result {
 
     my @column_info = @$out_info_ref;
 
+    ## loop over table to determine the widest element in each column
+    #
+    foreach my $this_row ( @$out_ref ) {
+        my $col_count = 0;
+        foreach my $this_col ( @$this_row ) {
+
+            my $colwidth = ( defined($this_col) ) ? length( $this_col ) : 0;
+
+            if ( $colwidth > $column_info[$col_count]{'maxwidth'} ) {
+                $column_info[$col_count]{'maxwidth'} = $colwidth;
+            }
+            $col_count++;
+        }
+
+    }
+
     my $header_string = &get_header( @column_info );
     $display_result .= "$header_string";
 
@@ -377,15 +365,22 @@ sub format_result {
     foreach my $this_row ( @$out_ref ) {
         my $count_columns = 0;
         foreach my $this_column ( @$this_row ) {
+
+            my $col_width = $column_info[$count_columns]{'maxwidth'};
     
-            my $width = ( $column_info[$count_columns]{'precision'} > $min_col_width )
-                ? $column_info[$count_columns]{'precision'}
-                : $min_col_width;
-    
+            # my $width = ( $column_info[$count_columns]{'precision'} > $min_col_width )
+            #     ? $column_info[$count_columns]{'precision'}
+            #     : $min_col_width;
+
+            my $justify = "%-";
+            if ( $column_info[$count_columns]{'justify'} eq 'right' ) {
+                $justify = "%";
+            }
+
             if ( defined $this_column ) {
-                $display_result .= sprintf( "%-"."$width"."s", $this_column);
+                $display_result .= sprintf( "$justify"."$col_width"."s", $this_column);
             } else {
-                $display_result .= sprintf( "%-"."$width"."s", '' );
+                $display_result .= sprintf( "%-"."$col_width"."s", '' );
             }
             $display_result .=  " ";
             $count_columns++;
