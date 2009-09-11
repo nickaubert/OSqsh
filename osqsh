@@ -29,27 +29,11 @@ my @need_oravars = qw(
     ORACLE_PASS
     TNS_ADMIN
 );
-&load_neededvars ( @need_oravars );
-
-## minimum column width
-#  needs to be ensmartened
-#
-my $min_col_width = 15;
-
-
-## load optional settings from rc file
-#
-my @presets = &add_rc_settings(\%rc_vars);
-
-my $oracle_home = $ENV{'ORACLE_HOME'};
-my $oracle_sid  = $ENV{'ORACLE_SID' };
-my $oracle_user = $ENV{'ORACLE_USER'};
-my $oracle_pass = $ENV{'ORACLE_PASS'};
-# my $tmp_dir     = $ENV{'TMP_DIR'};
-my $sqlplus_full = "$oracle_home/bin/sqlplus";
-my $sqlplus_args = '-L -S';
-if ( ! -f $sqlplus_full ) { die "No sqlplus at $sqlplus_full\n"; }
-if ( ! -x $sqlplus_full ) { die "Cannot execute $sqlplus_full\n"; }
+my $oracle_settings_ref = &load_neededvars ( @need_oravars );
+my %oracle_settings = %$oracle_settings_ref;
+my $oracle_sid  = $oracle_settings{'ORACLE_SID' };
+my $oracle_user = $oracle_settings{'ORACLE_USER'};
+my $oracle_pass = $oracle_settings{'ORACLE_PASS'};
 
 ## connect to database
 #
@@ -110,8 +94,8 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
 
     ## record settings
     #
-    } elsif ( $command =~ /^set /i ) {
-        push @presets , $command;
+    # } elsif ( $command =~ /^set /i ) {
+    #     push @presets , $command;
 
     ## add table column headers for tab completion
     #
@@ -129,7 +113,7 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
         $command =~ s/;.*$/;/;
         push @multiline_cmd , $command;
         my $multiline_cmd = join ' '  , @multiline_cmd;
-        my $presets       = join "\n" , @presets;
+        # my $presets       = join "\n" , @presets;
         @multiline_cmd = ();
 
         # $term->addhistory($multiline_cmd) if ( $command =~ /\S/ );
@@ -199,19 +183,25 @@ sub load_rcfile {
 }
 
 sub load_neededvars {
+
     my @load_these = @_;
+    my %oracle_settings;
     foreach my $this_oravar ( @load_these ) {
         if ( defined $ENV{"$this_oravar"} ) {
-            # good
+            $oracle_settings{$this_oravar} = $ENV{"$this_oravar"};
         } elsif ( defined $rc_vars{$this_oravar} ) {
             $ENV{"$this_oravar"} = $rc_vars{$this_oravar};
+            $oracle_settings{$this_oravar} = $rc_vars{$this_oravar};
         } else {
             print "Enter $this_oravar: ";
             my $input_var = <STDIN>;
             chomp $input_var;
             $ENV{"$this_oravar"} = $input_var;
+            $oracle_settings{$this_oravar} = $input_var;
         }
     }
+
+    return \%oracle_settings;
 }
 
 sub load_usertables {
@@ -249,18 +239,18 @@ sub get_col_headers {
 
 }
 
-sub add_rc_settings {
-    my @custom_settings;
-    my(%all_settings) = %{$_[0]};
-    my @all_settings = keys( %all_settings );
-    foreach my $this_setting ( @all_settings ) {
-        if ( $this_setting =~ m/^set\d+/ ) {
-            my $set_setting = $all_settings{$this_setting};
-            push @custom_settings , $set_setting;
-        }
-    }
-    return ( @custom_settings );
-}
+# sub add_rc_settings {
+#     my @custom_settings;
+#     my(%all_settings) = %{$_[0]};
+#     my @all_settings = keys( %all_settings );
+#     foreach my $this_setting ( @all_settings ) {
+#         if ( $this_setting =~ m/^set\d+/ ) {
+#             my $set_setting = $all_settings{$this_setting};
+#             push @custom_settings , $set_setting;
+#         }
+#     }
+#     return ( @custom_settings );
+# }
 
 sub get_column_data {
 
@@ -304,12 +294,7 @@ sub get_header {
     foreach my $this_column ( @column_stuff ) {
 
         my $width = $column_stuff[$count_columns]{'maxwidth'};
-        # my $width = ( $column_stuff[$count_columns]{'precision'} > $min_col_width )
-        #     ? $column_stuff[$count_columns]{'precision'}
-        #     : $min_col_width;
-
         for ( my $i = 1 ; $i <= $width ; $i++ ) { $separators[$count_columns] .= "-"; }
-
         $header .= sprintf( "%-"."$width"."s", ${$this_column}{'col_name'});
         $header .= ' ';
         $count_columns++;
@@ -367,11 +352,6 @@ sub format_result {
         foreach my $this_column ( @$this_row ) {
 
             my $col_width = $column_info[$count_columns]{'maxwidth'};
-    
-            # my $width = ( $column_info[$count_columns]{'precision'} > $min_col_width )
-            #     ? $column_info[$count_columns]{'precision'}
-            #     : $min_col_width;
-
             my $justify = "%-";
             if ( $column_info[$count_columns]{'justify'} eq 'right' ) {
                 $justify = "%";
