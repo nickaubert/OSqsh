@@ -79,9 +79,12 @@ my @tab_completes = &load_tabs(@nice_tabs);
 ## set up readline with tab completion
 #
 my $prompt = "OSQSH> ";
-my $term = Term::ReadLine->new('OSqsh');
+my $term = Term::ReadLine->newTTY('OSqsh');
 my $attribs = $term->Attribs;
 $attribs->{completion_function} = sub { return @tab_completes; };
+
+my $full_cli = "$sqlplus_full $sqlplus_args $oracle_user/$oracle_pass";
+my $pid = open3( \*CHLDIN, \*CHLDOUT, \*CHLDERR, $full_cli );
 
 
 ## now run the prompt
@@ -119,16 +122,15 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
         # $term->addhistory($multiline_cmd) if ( $command =~ /\S/ );
         print TMP_FILE "$presets\n";
         # print TMP_FILE "$multiline_cmd\nquit\n";
-        print TMP_FILE "$multiline_cmd\n";
-        my $full_cli = "$sqlplus_full $sqlplus_args $oracle_user/$oracle_pass \@$temp_file";
+        # print TMP_FILE "$multiline_cmd\n";
+        print CHLDIN "$multiline_cmd\n";
         # my $read_out = `$full_cli`;
-        my $pid = open3( \*CHLDIN, \*CHLDOUT, \*CHLDERR, $full_cli );
         # select(STDERR); $| = 1;
-        close(CHLDIN);
         # open( SQLPLUS ,"| $full_cli") || die "SQLPLus failed: $!\n";
         while ( <CHLDOUT> ) {
             print "$_";
         }
+        print "finished out\n";
         truncate TMP_FILE,0;
         seek (TMP_FILE,0,0);
         # print "$read_out";
@@ -147,6 +149,7 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
 
 }
 
+close(CHLDIN);
 close TMP_FILE;
 unlink $temp_file;
 print "\n";

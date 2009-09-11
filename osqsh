@@ -55,7 +55,7 @@ if ( ( defined $rc_vars{'ENABLE_TABS'} ) and ( $rc_vars{'ENABLE_TABS'} =~ /on|ye
 #
 my @nice_tabs = qw( 
     select
-    desc
+    describe
     tabs
     insert
     into
@@ -68,6 +68,8 @@ my @nice_tabs = qw(
     timestamp
     dual
     between
+    exit
+    quit
     exists
 );
 push @nice_tabs , @user_tables;
@@ -89,7 +91,7 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
 
     ## quit (^D also works)
     #
-    if ( $command =~ /^quit\W*/i ) {
+    if ( $command =~ /^(quit|exit)\W*/i ) {
         exit 0;
 
     ## record settings
@@ -97,14 +99,29 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
     # } elsif ( $command =~ /^set /i ) {
     #     push @presets , $command;
 
-    ## add table column headers for tab completion
+    ## reproduce DESCRIBE sqlplus command
+    #  add table column headers for tab completion
     #
-    } elsif ( $command =~ /^tabs (\w+)/i ) {
-        my $load_table = $1;
+    } elsif ( $command =~ /^des(c|cr|cri|crib|cribe) (\w+)/i ) {
+        my $load_table = uc($2);
         my @column_headers = &get_col_headers( $dbh , $load_table );
         push @nice_tabs , @column_headers;
         my @tab_completes = &load_tabs(@nice_tabs);
         $attribs->{completion_function} = sub { return @tab_completes; };
+
+        my $desc_cmd = "
+            SELECT  COLUMN_NAME, 
+                    NULLABLE, 
+                    DATA_TYPE, 
+                    CHAR_LENGTH, 
+                    DATA_PRECISION
+            FROM    USER_TAB_COLUMNS
+            WHERE   TABLE_NAME = '$load_table'";
+
+        # print "here is the SQL dude\n$desc_cmd\n\nwtf?\nd";
+        my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh , $desc_cmd );
+        my $result_out = &format_result( $result_ref , $result_columninfo_ref );
+        print "$result_out";
 
     ## any line that contains a semicolon will be executed (anything after the semicolon is ignored)
     #
@@ -112,18 +129,14 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
 
         $command =~ s/;.*$/;/;
         push @multiline_cmd , $command;
-        my $multiline_cmd = join ' '  , @multiline_cmd;
+        my $full_cmd = join ' '  , @multiline_cmd;
         # my $presets       = join "\n" , @presets;
         @multiline_cmd = ();
-
         # $term->addhistory($multiline_cmd) if ( $command =~ /\S/ );
+        $full_cmd =~ s/;.*$//;
 
-        $multiline_cmd =~ s/;.*$//;
-
-        my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh , $multiline_cmd );
-        my @sql_result = @$result_ref;
-        my @sql_result_columninfo = @$result_columninfo_ref;
-        my $result_out = &format_result( \@sql_result , \@sql_result_columninfo );
+        my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh , $full_cmd );
+        my $result_out = &format_result( $result_ref , $result_columninfo_ref );
         print "$result_out";
 
     ## anything else is considered a multiline command

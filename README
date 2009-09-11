@@ -1,1 +1,1 @@
-Oracle client CLI wrapper for SQLPlus that adds Readline support
+Oracle SQLPlus replacement made by duct-taping DBD::Oracle to Term::ReadLine::Gnu.
