@@ -61,14 +61,22 @@ my @nice_tabs = qw(
     dual 
     describe exit quit
 );
+my %nice_tabs = (
+    basic_cmd => [ 'select' , 'insert' , 'into' , 'create' , 'from' , 'where' , 'exists' , 'between' ],
+    data_type => [ 'varchar2' , 'number' , 'timestamp' ],
+    sys_table => [ 'dual' ],
+    sqlplscmd => [ 'describe' , 'exit' , 'quit' ],
+    usr_table => [ ]
+);
 
 ## optionally load tables for tab-completion
 #
 if ( ( defined $rc_vars{'ENABLE_TABS'} ) and ( $rc_vars{'ENABLE_TABS'} =~ /on|yes|true/i ) ) {
     my @user_tables = &load_usertables( $dbh );
     push @nice_tabs , @user_tables;
+    push @{$nice_tabs{usr_table}} , @user_tables;
 }
-my @tab_completes = &load_tabs( $term , @nice_tabs );
+&load_completion( $term , \%nice_tabs );
 
 
 ## now run the prompt
@@ -95,10 +103,9 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
             # print "foreach $this_argument\n";
             if ( grep /^$this_argument$/i , @user_tables ) {
                 # print "has grep: $this_argument\n";
-                my @desc_return = &desc_table( $dbh , $this_argument );
-                my $display_desc = shift ( @desc_return );
-                push @nice_tabs , @desc_return;
-                my @tab_completes = &load_tabs( $term , @nice_tabs);
+                my ( $display_desc , @desc_return ) = &desc_table( $dbh , $this_argument );
+                push @{$nice_tabs{usr_table}} , @desc_return;
+                &load_completion( $term , \%nice_tabs);
                 print "$display_desc";
             } else {
                 print "No such table $this_argument in USER_TABLES\n";
@@ -224,9 +231,18 @@ sub load_usertables {
 
 }
 
-sub load_tabs {
+sub load_completion {
 
-    my ( $term_ref , @these_words ) = @_;
+    my ( $term_ref , $nice_tabs_ref ) = @_;
+
+    ## just load everything into a big list
+    #
+    my %local_tabs = %$nice_tabs_ref;
+    my @these_words;
+    foreach my $this_key ( keys %$nice_tabs_ref ) {
+        push @these_words , @{$local_tabs{$this_key}};
+        # print "adding @these_words\n";
+    }
 
     my %lc_keys;
     map { $lc_keys{lc($_)} = '' } @these_words;
