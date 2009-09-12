@@ -13,8 +13,17 @@ use warnings;
 use strict;
 use Term::ReadLine;
 use DBD::Oracle;
+use Getopt::Long;
 
-my $debug = 1;
+my $debug = 0;
+my %options;
+GetOptions (
+    'debug' => \$debug,
+    'oracle_user=s' => \$options{'ORACLE_USER'},
+    'oracle_pass=s' => \$options{'ORACLE_PASS'},
+    'oracle_sid=s'  => \$options{'ORACLE_SID'},
+);
+if ( $debug ) { print "debug on\n"; }
 
 ## load contents of rc file if any
 #
@@ -31,7 +40,7 @@ my @need_oravars = qw(
     ORACLE_PASS
     TNS_ADMIN
 );
-my $oracle_settings_ref = &load_neededvars ( @need_oravars );
+my $oracle_settings_ref = &load_neededvars ( \%options , @need_oravars );
 my %oracle_settings = %$oracle_settings_ref;
 my $oracle_sid  = $oracle_settings{'ORACLE_SID' };
 my $oracle_user = $oracle_settings{'ORACLE_USER'};
@@ -203,10 +212,15 @@ sub load_rcfile {
 
 sub load_neededvars {
 
-    my @load_these = @_;
-    my %oracle_settings;
+    my ( $options_ref , @load_these ) = @_;
+    my %oracle_settings = %$options_ref;
+
     foreach my $this_oravar ( @load_these ) {
-        if ( defined $ENV{"$this_oravar"} ) {
+
+        if ( defined $oracle_settings{$this_oravar} ) {
+            $oracle_settings{$this_oravar} = $oracle_settings{$this_oravar};
+            # print "option: $oracle_settings{$this_oravar}\n";
+        } elsif ( defined $ENV{"$this_oravar"} ) {
             $oracle_settings{$this_oravar} = $ENV{"$this_oravar"};
         } elsif ( defined $rc_vars{$this_oravar} ) {
             $ENV{"$this_oravar"} = $rc_vars{$this_oravar};
@@ -249,13 +263,13 @@ sub load_completion {
     #
     my @just_tables = @{$local_tabs{'usr_table'}};
     push @just_tables , map { lc($_) } @just_tables;
-    print "just tables: @just_tables\n";
+    # print "just tables: @just_tables\n";
 
     ## hack
     #
     my @just_column = @{$local_tabs{'usr_colmn'}};
     push @just_column , map { lc($_) } @just_column;
-    print "just columns: @just_column\n";
+    # print "just columns: @just_column\n";
 
     my %lc_keys;
     map { $lc_keys{lc($_)} = '' } @these_words;
