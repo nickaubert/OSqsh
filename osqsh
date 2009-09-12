@@ -14,6 +14,8 @@ use strict;
 use Term::ReadLine;
 use DBD::Oracle;
 
+my $debug = 1;
+
 ## load contents of rc file if any
 #
 my %rc_vars = &load_rcfile;
@@ -37,9 +39,12 @@ my $oracle_pass = $oracle_settings{'ORACLE_PASS'};
 
 ## connect to database
 #
-my $dbh = DBI->connect( "dbi:Oracle:$oracle_sid" , "$oracle_user" , "$oracle_pass" ) || die( $DBI::errstr . "\n" );
-$dbh->{AutoCommit}    = 0;
-$dbh->{RaiseError}    = 1;
+my $dbh = DBI->connect( "dbi:Oracle:$oracle_sid" , "$oracle_user" , "$oracle_pass" , 
+    { RaiseError => 0 , AutoCommit => 1 } )
+    || die( $DBI::errstr . "\n" );
+
+# $dbh->{AutoCommit}    = 1;
+# $dbh->{RaiseError}    = 0;
 $dbh->{ora_check_sql} = 0;
 $dbh->{RowCacheSize}  = 16;
 
@@ -119,14 +124,17 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
             $full_cmd = $command;
         }
 
-        print "Gonna SQL:\n$full_cmd\n";
-
+        # print "Gonna SQL:\n$full_cmd\n";
         # my $presets       = join "\n" , @presets;
         # $full_cmd =~ s/;.*$//;
 
         my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh , $full_cmd );
-        my $result_out = &format_result( $result_ref , $result_columninfo_ref );
-        print "$result_out";
+        if ( ( ref($result_ref) eq 'ARRAY' ) and ( ref($result_columninfo_ref) eq 'ARRAY' ) ) {
+            my $result_out = &format_result( $result_ref , $result_columninfo_ref );
+            print "$result_out";
+        } else {
+            if ( $debug ) { print "\$result_ref: $result_ref\n"; }
+        }
 
     ## anything else is considered a multiline command
     #
@@ -236,18 +244,6 @@ sub get_col_headers {
 
 }
 
-# sub add_rc_settings {
-#     my @custom_settings;
-#     my(%all_settings) = %{$_[0]};
-#     my @all_settings = keys( %all_settings );
-#     foreach my $this_setting ( @all_settings ) {
-#         if ( $this_setting =~ m/^set\d+/ ) {
-#             my $set_setting = $all_settings{$this_setting};
-#             push @custom_settings , $set_setting;
-#         }
-#     }
-#     return ( @custom_settings );
-# }
 
 sub get_column_data {
 
@@ -269,7 +265,9 @@ sub get_column_data {
         $column_stuff[$count_columns]{'scale2'}    = $scale[$count_columns];
         $column_stuff[$count_columns]{'maxwidth'}  = length($this_col_name); # will may be updated below
 
-        if ( grep m/$type_names[$count_columns]/ , qw( DECIMAL DATE ) ) {
+        # print "$this_col_name is type $type_names[$count_columns]\n";
+        my @right_justify_types = ( 'DECIMAL' , 'DATE' , 'NUMBER' , 'DOUBLE PRECISION' );
+        if ( grep m/$type_names[$count_columns]/ , @right_justify_types ) {
             $column_stuff[$count_columns]{'justify'} = 'right';
         } else {
             $column_stuff[$count_columns]{'justify'} = 'left';
@@ -308,12 +306,17 @@ sub run_sql_command {
 
     my ( $dbh_ref , $sql_cmd ) = @_;
 
-    my $sth_ref = $dbh_ref->prepare($sql_cmd);
-    my $ary_ref = $dbh->selectall_arrayref($sql_cmd);
-    my @ary_info = &get_column_data ( $dbh_ref , $sth_ref );
-    my $ary_info_ref = \@ary_info;
-
-    return ( $ary_ref , $ary_info_ref );
+    # my $sth_ref = $dbh_ref->prepare($sql_cmd);
+    my $sth_ref = $dbh_ref->prepare($sql_cmd) or print "\nSQL fail!\n\n";
+    if ( $sth_ref ) {
+        my $ary_ref = $dbh->selectall_arrayref($sql_cmd);
+        my @ary_info = &get_column_data ( $dbh_ref , $sth_ref );
+        my $ary_info_ref = \@ary_info;
+        return ( $ary_ref , $ary_info_ref );
+    } else {
+        return ( \"This is not an array reference" , \"Neither is this" );
+    }
+    
 
 }
 
@@ -330,7 +333,9 @@ sub format_result {
         my $col_count = 0;
         foreach my $this_col ( @$this_row ) {
 
-            my $colwidth = ( defined($this_col) ) ? length( $this_col ) : 0;
+            ## using (NULL) to represent null values, so length is 6
+            #
+            my $colwidth = ( defined($this_col) ) ? length( $this_col ) : 6;
 
             if ( $colwidth > $column_info[$col_count]{'maxwidth'} ) {
                 $column_info[$col_count]{'maxwidth'} = $colwidth;
@@ -354,11 +359,8 @@ sub format_result {
                 $justify = "%";
             }
 
-            if ( defined $this_column ) {
-                $display_result .= sprintf( "$justify"."$col_width"."s", $this_column);
-            } else {
-                $display_result .= sprintf( "%-"."$col_width"."s", '' );
-            }
+            if ( ! defined $this_column ) { $this_column = '(NULL)'; }
+            $display_result .= sprintf( "$justify"."$col_width"."s", $this_column);
             $display_result .=  " ";
             $count_columns++;
         }
