@@ -66,7 +66,8 @@ my %nice_tabs = (
     data_type => [ 'varchar2' , 'number' , 'timestamp' ],
     sys_table => [ 'dual' ],
     sqlplscmd => [ 'describe' , 'exit' , 'quit' ],
-    usr_table => [ ]
+    usr_table => [ ],
+    usr_colmn => [ ]
 );
 
 ## optionally load tables for tab-completion
@@ -104,7 +105,7 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
             if ( grep /^$this_argument$/i , @user_tables ) {
                 # print "has grep: $this_argument\n";
                 my ( $display_desc , @desc_return ) = &desc_table( $dbh , $this_argument );
-                push @{$nice_tabs{usr_table}} , @desc_return;
+                push @{$nice_tabs{'usr_colmn'}} , @desc_return;
                 &load_completion( $term , \%nice_tabs);
                 print "$display_desc";
             } else {
@@ -244,11 +245,38 @@ sub load_completion {
         # print "adding @these_words\n";
     }
 
+    ## hack
+    #
+    my @just_tables = @{$local_tabs{'usr_table'}};
+    push @just_tables , map { lc($_) } @just_tables;
+    print "just tables: @just_tables\n";
+
+    ## hack
+    #
+    my @just_column = @{$local_tabs{'usr_colmn'}};
+    push @just_column , map { lc($_) } @just_column;
+    print "just columns: @just_column\n";
+
     my %lc_keys;
     map { $lc_keys{lc($_)} = '' } @these_words;
     my @tab_words = ( keys %lc_keys , map { uc($_) } keys %lc_keys );
-    $term_ref->Attribs->{completion_function} = sub { return @tab_words; };
-    return @tab_words;
+    # $term_ref->Attribs->{completion_function} = sub { return @tab_words; };
+
+    ## proof of concept: only return table names when last full word is "from"
+    #  only return column names when last full word is "select"
+    #
+    $term_ref->Attribs->{completion_function} = sub {
+        my ($text, $line, $start) = @_;
+        if ( $line =~ m/\s+FROM\s+\w*$/i ) {
+            return @just_tables;
+        } elsif ( $line =~ m/SELECT\s+\w*$/i ) {
+            return @just_column;
+        } else {
+            return @tab_words;
+        }
+    };
+
+    return 0;
 }
 
 sub get_col_headers {
