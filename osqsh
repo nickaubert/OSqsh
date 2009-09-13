@@ -15,52 +15,60 @@ use Term::ReadLine;
 use DBD::Oracle;
 use Getopt::Long;
 
-my $debug = 0;
-my %options;
-GetOptions (
-    'debug' => \$debug,
-    'oracle_user=s' => \$options{'ORACLE_USER'},
-    'oracle_pass=s' => \$options{'ORACLE_PASS'},
-    'oracle_sid=s'  => \$options{'ORACLE_SID'},
-);
+
+## Command Line Interface options
+#
+my $cli_opts_ref = &loadcliopts;
+my %cli_opts = %$cli_opts_ref;
+my $debug = $cli_opts{'debug'};
 if ( $debug ) { print "debug on\n"; }
+
 
 ## load contents of rc file if any
 #
-my %rc_vars = &load_rcfile;
+my $rcf_opts_ref = &load_rcfile;
+my %rcf_opts = %$rcf_opts_ref;
 
-## assign needed variables 
-#  environment has precedence over rc file
-#  load_neededvars subroutine loads directly into %ENV
+
+## assign mandatory values
+#  make sure each of these values has something in it
+#  load_neededvars subroutine modifies %ENV
 #
-my @need_oravars = qw( 
+my @need_oravals = qw( 
     ORACLE_HOME
     ORACLE_SID
     ORACLE_USER
     ORACLE_PASS
     TNS_ADMIN
 );
-my $oracle_settings_ref = &load_neededvars ( \%options , @need_oravars );
+my $oracle_settings_ref = &load_oracle_vals ( \%cli_opts , \%rcf_opts , @need_oravals );
 my %oracle_settings = %$oracle_settings_ref;
-my $oracle_sid  = $oracle_settings{'ORACLE_SID' };
-my $oracle_user = $oracle_settings{'ORACLE_USER'};
-my $oracle_pass = $oracle_settings{'ORACLE_PASS'};
+
 
 ## connect to database
 #
-my $dbh = DBI->connect( "dbi:Oracle:$oracle_sid" , "$oracle_user" , "$oracle_pass" , 
-    { RaiseError => 0 , AutoCommit => 1 } )
-    || die( $DBI::errstr . "\n" );
+my $dbh = DBI->connect(
+    "dbi:Oracle:$oracle_settings{'ORACLE_SID'}" ,
+    "$oracle_settings{'ORACLE_USER'}" ,
+    "$oracle_settings{'ORACLE_PASS'}" , 
+    {
+        RaiseError => 0,
+        AutoCommit => 1,
+        ora_check_sql => 0,
+        RowCacheSize => 16
+    }
+) || die( $DBI::errstr . "\n" );
 
 # $dbh->{AutoCommit}    = 1;
 # $dbh->{RaiseError}    = 0;
-$dbh->{ora_check_sql} = 0;
-$dbh->{RowCacheSize}  = 16;
+# $dbh->{ora_check_sql} = 0;
+# $dbh->{RowCacheSize}  = 16;
 
 
 ## set up readline with tab completion
 #
 my $term = Term::ReadLine->new('OSqsh');
+
 
 ## load miscellaneous tab-completion words
 #
@@ -78,21 +86,14 @@ my %nice_tabs = (
     usr_table => [ ],
     usr_colmn => [ ]
 );
-
-## optionally load tables for tab-completion
-#
-if ( ( defined $rc_vars{'ENABLE_TABS'} ) and ( $rc_vars{'ENABLE_TABS'} =~ /on|yes|true/i ) ) {
-    my @user_tables = &load_usertables( $dbh );
-    push @nice_tabs , @user_tables;
-    push @{$nice_tabs{usr_table}} , @user_tables;
-}
+my @user_tables = &load_usertables( $dbh );
+push @{$nice_tabs{'usr_table'}} , @user_tables;
 &load_completion( $term , \%nice_tabs );
 
 
 ## now run the prompt
 #
 my @multiline_cmd;
-my $sth;
 my $prompt = "OSQSH> ";
 while ( defined ( my $command = $term->readline($prompt)) ) {
 
@@ -132,7 +133,7 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
 
         my $full_cmd;
         if ( @multiline_cmd > 0 ) {
-            print "YES!\n";
+            # print "YES!\n";
             push @multiline_cmd , $command;
             $full_cmd = join ' '  , @multiline_cmd;
             $term->addhistory("$full_cmd;");
@@ -140,10 +141,6 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
         } else {
             $full_cmd = $command;
         }
-
-        # print "Gonna SQL:\n$full_cmd\n";
-        # my $presets       = join "\n" , @presets;
-        # $full_cmd =~ s/;.*$//;
 
         my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh , $full_cmd );
         if ( ( ref($result_ref) eq 'ARRAY' ) and ( ref($result_columninfo_ref) eq 'ARRAY' ) ) {
@@ -159,7 +156,7 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
         push @multiline_cmd , $command;
     }
 
-    ## show the buffer if anythings in it
+    ## show the buffer if anything is in it
     #
     if ( @multiline_cmd > 0 ) {
         my $display_multiline_cmd = join "\n       " , @multiline_cmd;
@@ -177,71 +174,135 @@ END {
 ##########################################################################
 # Subroutines
 ##########################################################################
+
+##########################################################################
+# sub load_rcfile
+#   no input
+#   returns reference to hash containing settings in rc file
+#       hash will be empty if there there is no rc file
+##########################################################################
 sub load_rcfile {
 
     my %local_rc_vars;
-    my $setcount = 1;
-    if ( defined $ENV{'HOME'} ) {
-        my $rc_file = "$ENV{'HOME'}/.osqshrc";
-    
-        if ( -f $rc_file ) {
-            open ( RCFILE , "$rc_file" ) || die "Unable to open $rc_file\n";
-            while (<RCFILE>) {
-                chomp;              # no newline
-                s/#.*//;            # no comments
-                s/^\s+//;           # no leading white
-                s/\s+$//;           # no trailing white
-                next unless length; # anything left?
-                my ($var, $value);
-                if ( m/^(set\s+.*)$/i ) {
-                    # print "found setting $1\n";
-                    $var   = "set" . $setcount;
-                    $value = $1;
-                    $setcount++;
-                } else {
-                    ( $var , $value ) = split( /\s*=\s*/ , $_ , 2 );
-                }
-                $local_rc_vars{$var} = $value;
-            }
+    unless ( defined $ENV{'HOME'} ) {
+        return \%local_rc_vars;
+    }
+
+    my $rc_file = "$ENV{'HOME'}/.osqshrc";
+    unless ( -f $rc_file ) {
+        return \%local_rc_vars;
+    }
+
+    unless ( open ( RCFILE , "$rc_file" ) ) {
+        warn "Unable to open $rc_file\n";
+        return \%local_rc_vars;
+    }
+
+    while (<RCFILE>) {
+        chomp;              # no newline
+        s/#.*//;            # no comments
+        s/^\s+//;           # no leading white
+        s/\s+$//;           # no trailing white
+        next unless m/(.+)\s*=\s*(.+)/;
+        if ( defined($1) and defined($2) ) {
+            # my $key   = uc($1);
+            # my $value    = $2;
+            # $local_rc_vars{$key} = $value;
+            $local_rc_vars{uc($1)} = $2;
         }
     }
 
-    return %local_rc_vars;
+    return \%local_rc_vars;
 
 }
 
-sub load_neededvars {
 
-    my ( $options_ref , @load_these ) = @_;
-    my %oracle_settings = %$options_ref;
+##########################################################################
+# sub load_oracle_vals
+#   input:
+#       options hash ref,
+#       rc file values hash ref,
+#       list of mandatory variables
+#  value prioritization is: 
+#       1. command line option
+#       2. environment variable
+#       3. rc file
+#       4. if all above are empty, then ask nicely
+#   returns reference to hash containing oracle settings
+#       also updates %ENV
+##########################################################################
+sub load_oracle_vals {
 
-    foreach my $this_oravar ( @load_these ) {
+    my ( $cli_opts_ref , $rcf_opts_ref , @need_oravals ) = @_;
+    my %cli_opts = %$cli_opts_ref;
+    my %rcf_opts = %$rcf_opts_ref;
+    my %oracle_settings;
 
-        if ( defined $oracle_settings{$this_oravar} ) {
-            $oracle_settings{$this_oravar} = $oracle_settings{$this_oravar};
-            # print "option: $oracle_settings{$this_oravar}\n";
-        } elsif ( defined $ENV{"$this_oravar"} ) {
-            $oracle_settings{$this_oravar} = $ENV{"$this_oravar"};
-        } elsif ( defined $rc_vars{$this_oravar} ) {
-            $ENV{"$this_oravar"} = $rc_vars{$this_oravar};
-            $oracle_settings{$this_oravar} = $rc_vars{$this_oravar};
-        } else {
+    ## first, load cli options into settings
+    #
+    foreach my $this_cli_opt ( keys %cli_opts ) {
+        $oracle_settings{$this_cli_opt} = $cli_opts{$this_cli_opt};
+    }
+
+    ## second, load environment variables into settings
+    #  if they haven't already been defined on the cli
+    #
+    foreach my $this_oravar ( @need_oravals ) {
+        if (
+          ( ! defined $oracle_settings{$this_oravar} ) and
+          (   defined $ENV{$this_oravar}             ) ) {
+            $oracle_settings{$this_oravar} = $ENV{$this_oravar};
+        }
+    }
+
+    ## third, check rc file
+    #
+    foreach my $this_rcf_opt ( keys %rcf_opts ) {
+
+        ## warn if environment overrides an rc setting 
+        #  because this can drive you crazy
+        #
+        if (
+          ( defined $ENV{$this_rcf_opt} ) and
+          ( $ENV{$this_rcf_opt} ne $rcf_opts{$this_rcf_opt}) ) {
+            warn "$this_rcf_opt in environment overrides rcfile.\n";
+            next;
+        }
+
+        ## don't bother to warn for CLI overrides
+        #
+        next if ( defined $cli_opts{$this_rcf_opt} );
+
+        $oracle_settings{$this_rcf_opt} = $rcf_opts{$this_rcf_opt};
+    }
+
+    ## fourth assign any mandatory values that haven't already been assigned
+    #
+    foreach my $this_oravar ( @need_oravals ) {
+
+        if ( ! defined $oracle_settings{$this_oravar} ) {
             print "Enter $this_oravar: ";
             my $input_var = <STDIN>;
             chomp $input_var;
-            $ENV{"$this_oravar"} = $input_var;
             $oracle_settings{$this_oravar} = $input_var;
         }
+
+        ## make sure environment matches
+        #
+        $ENV{$this_oravar} = $oracle_settings{$this_oravar};
+
+        if ( $debug ) { print "We have added $this_oravar is $oracle_settings{$this_oravar}\n"; }
     }
 
     return \%oracle_settings;
 }
 
+
 sub load_usertables {
 
     my ( $dbh_ref ) = @_;
     my $cmd = "SELECT TABLE_NAME FROM USER_TABLES";
-    my @load_tables = map { $_ = $_->{TABLE_NAME}; } @{ $dbh->selectall_arrayref( $cmd, { Slice => {} }) };
+    my @load_tables = map { $_ = $_->{'TABLE_NAME'}; } @{ $dbh->selectall_arrayref( $cmd, { Slice => {} }) };
     return @load_tables;
 
 }
@@ -274,11 +335,11 @@ sub load_completion {
     my %lc_keys;
     map { $lc_keys{lc($_)} = '' } @these_words;
     my @tab_words = ( keys %lc_keys , map { uc($_) } keys %lc_keys );
-    # $term_ref->Attribs->{completion_function} = sub { return @tab_words; };
 
     ## proof of concept: only return table names when last full word is "from"
     #  only return column names when last full word is "select"
     #
+    # $term_ref->Attribs->{completion_function} = sub { return @tab_words; };
     $term_ref->Attribs->{completion_function} = sub {
         my ($text, $line, $start) = @_;
         if ( $line =~ m/\s+FROM\s+\w*$/i ) {
@@ -451,4 +512,15 @@ sub desc_table {
 
     return ( $result_out , @column_headers );
 
+}
+
+sub loadcliopts {
+    my %options;
+    GetOptions (
+        'debug'         => \$options{'debug'},
+        'oracle_user=s' => \$options{'ORACLE_USER'},
+        'oracle_pass=s' => \$options{'ORACLE_PASS'},
+        'oracle_sid=s'  => \$options{'ORACLE_SID'},
+    );
+    return \%options;
 }
