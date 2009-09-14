@@ -59,35 +59,19 @@ my $dbh = DBI->connect(
     }
 ) || die( $DBI::errstr . "\n" );
 
-# $dbh->{AutoCommit}    = 1;
-# $dbh->{RaiseError}    = 0;
-# $dbh->{ora_check_sql} = 0;
-# $dbh->{RowCacheSize}  = 16;
 
-
-## set up readline with tab completion
+## set up readline with tab completion and load miscellaneous tab-completion words
 #
 my $term = Term::ReadLine->new('OSqsh');
-
-
-## load miscellaneous tab-completion words
-#
-my @nice_tabs = qw( 
-    select insert into create from where exists between
-    varchar2 number timestamp 
-    dual 
-    describe exit quit
-);
+my @user_tables = &load_usertables( $dbh );
 my %nice_tabs = (
     basic_cmd => [ 'select' , 'insert' , 'into' , 'create' , 'from' , 'where' , 'exists' , 'between' ],
     data_type => [ 'varchar2' , 'number' , 'timestamp' ],
     sys_table => [ 'dual' ],
     sqlplscmd => [ 'describe' , 'exit' , 'quit' ],
-    usr_table => [ ],
+    usr_table => \@user_tables,
     usr_colmn => [ ]
 );
-my @user_tables = &load_usertables( $dbh );
-push @{$nice_tabs{'usr_table'}} , @user_tables;
 &load_completion( $term , \%nice_tabs );
 
 
@@ -112,15 +96,15 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
         foreach my $this_argument ( @arguments ) {
             last if ( $this_argument eq ';' );
             # print "foreach $this_argument\n";
-            if ( grep /^$this_argument$/i , @user_tables ) {
+            # if ( grep /^$this_argument$/i , @user_tables ) {
                 # print "has grep: $this_argument\n";
                 my ( $display_desc , @desc_return ) = &desc_table( $dbh , $this_argument );
                 push @{$nice_tabs{'usr_colmn'}} , @desc_return;
                 &load_completion( $term , \%nice_tabs);
                 print "$display_desc";
-            } else {
-                print "No such table $this_argument in USER_TABLES\n";
-            }
+           #  } else {
+           #      print "No such table $this_argument in USER_TABLES\n";
+           #  }
         }
 
     ## any line that contains a semicolon will be executed (anything after the semicolon is ignored)
@@ -177,9 +161,10 @@ END {
 
 ##########################################################################
 # sub load_rcfile
-#   no input
-#   returns reference to hash containing settings in rc file
-#       hash will be empty if there there is no rc file
+#   input: none
+#   return: reference to hash containing settings in rc file
+#       (hash will be empty if there there is no rc file)
+#   Reads values from ~/.osqshrc
 ##########################################################################
 sub load_rcfile {
 
@@ -223,13 +208,14 @@ sub load_rcfile {
 #       options hash ref,
 #       rc file values hash ref,
 #       list of mandatory variables
-#  value prioritization is: 
+#   return: reference to hash containing oracle settings
+#       also updates %ENV
+#   Makes sure required Oracle variables are loaded
+#   value prioritization is: 
 #       1. command line option
 #       2. environment variable
 #       3. rc file
 #       4. if all above are empty, then ask nicely
-#   returns reference to hash containing oracle settings
-#       also updates %ENV
 ##########################################################################
 sub load_oracle_vals {
 
@@ -298,6 +284,12 @@ sub load_oracle_vals {
 }
 
 
+##########################################################################
+# sub load_usertables
+#   input: database handle
+#   return: list of table names
+#   Get the table names from USER_TABLES
+##########################################################################
 sub load_usertables {
 
     my ( $dbh_ref ) = @_;
@@ -307,6 +299,13 @@ sub load_usertables {
 
 }
 
+
+##########################################################################
+# sub load_completion
+#   input: ref to Term::ReadLine object , ref to hash with various words to complete
+#   return: list of possible words to auto-complete
+#   Readline tab completion with minimal intelligence
+##########################################################################
 sub load_completion {
 
     my ( $term_ref , $nice_tabs_ref ) = @_;
@@ -354,7 +353,14 @@ sub load_completion {
     return 0;
 }
 
-sub get_col_headers {
+
+##########################################################################
+# sub get_column_names
+#   input: database handle, table name
+#   return: list of column names in given table
+#   Get column names for a given table.  Used by DESCRIBE surrogate
+##########################################################################
+sub get_column_names {
 
     my ( $dbh_ref , $read_table ) = @_;
     my $cmd = uc("SELECT COLUMN_NAME FROM ALL_COL_COMMENTS WHERE TABLE_NAME = '$read_table'");
@@ -364,6 +370,12 @@ sub get_col_headers {
 }
 
 
+##########################################################################
+# sub get_column_data
+#   input: database handle, prepared sql statement handle
+#   return: reference to list of arrays containing information on table columns
+#   Get column information for a given table used in sql statement.
+##########################################################################
 sub get_column_data {
 
     ## collect column data
@@ -384,7 +396,6 @@ sub get_column_data {
         $column_stuff[$count_columns]{'scale2'}    = $scale[$count_columns];
         $column_stuff[$count_columns]{'maxwidth'}  = length($this_col_name); # will may be updated below
 
-        # print "$this_col_name is type $type_names[$count_columns]\n";
         my @right_justify_types = ( 'DECIMAL' , 'DATE' , 'NUMBER' , 'DOUBLE PRECISION' );
         if ( grep m/$type_names[$count_columns]/ , @right_justify_types ) {
             $column_stuff[$count_columns]{'justify'} = 'right';
@@ -394,11 +405,18 @@ sub get_column_data {
         $count_columns++;
     }
 
-    return @column_stuff;
+    return \@column_stuff;
 
 }
 
-sub get_header {
+
+##########################################################################
+# sub gen_table_header
+#   input: list of hashes with column information
+#   return: table header string
+#   Generates table header to use when displaying data retrieved
+##########################################################################
+sub gen_table_header {
 
     my @column_stuff = @_;
     my $header = '';
@@ -408,8 +426,8 @@ sub get_header {
     foreach my $this_column ( @column_stuff ) {
 
         my $width = $column_stuff[$count_columns]{'maxwidth'};
-        for ( my $i = 1 ; $i <= $width ; $i++ ) { $separators[$count_columns] .= "-"; }
-        $header .= sprintf( "%-"."$width"."s", ${$this_column}{'col_name'});
+        for ( my $i = 1 ; $i <= $width ; $i++ ) { $separators[$count_columns] .= '-'; }
+        $header .= sprintf( "%-${width}s", ${$this_column}{'col_name'});
         $header .= ' ';
         $count_columns++;
     }
@@ -421,16 +439,21 @@ sub get_header {
     return $header;
 }
 
+
+##########################################################################
+# sub run_sql_command
+#   input: database handle, sql command
+#   return: list of references to lists containing table and header data
+#   Passes whatever it's been given on to the database returns the result
+##########################################################################
 sub run_sql_command {
 
     my ( $dbh_ref , $sql_cmd ) = @_;
 
-    # my $sth_ref = $dbh_ref->prepare($sql_cmd);
     my $sth_ref = $dbh_ref->prepare($sql_cmd) or print "\nSQL fail!\n\n";
     if ( $sth_ref ) {
         my $ary_ref = $dbh->selectall_arrayref($sql_cmd);
-        my @ary_info = &get_column_data ( $dbh_ref , $sth_ref );
-        my $ary_info_ref = \@ary_info;
+        my $ary_info_ref = &get_column_data ( $dbh_ref , $sth_ref );
         return ( $ary_ref , $ary_info_ref );
     } else {
         return ( \"This is not an array reference" , \"Neither is this" );
@@ -439,6 +462,13 @@ sub run_sql_command {
 
 }
 
+##########################################################################
+# sub format_result
+#   input: reference to array containing data returned by database,
+#       and reference to array containing column information
+#   return: string of formatted data
+#   Puts the result of SQL command into a format approximating sqlplus
+##########################################################################
 sub format_result {
 
     my ( $out_ref , $out_info_ref ) = @_;
@@ -464,7 +494,7 @@ sub format_result {
 
     }
 
-    my $header_string = &get_header( @column_info );
+    my $header_string = &gen_table_header( @column_info );
     $display_result .= "$header_string";
 
     my $rv = 0;
@@ -491,29 +521,53 @@ sub format_result {
     return $display_result;
 }
 
+
+##########################################################################
+# sub desc_table
+#   input: database handle, table name
+#   return: string containing formatted info, and list of column names
+#   The list of column names is to be used for tab-completion
+##########################################################################
 sub desc_table {
 
     my ( $dbh_ref , $table_name ) = @_;
 
     my $desc_cmd = uc("
-        SELECT  COLUMN_NAME, 
-                NULLABLE, 
-                DATA_TYPE, 
-                CHAR_LENGTH, 
-                DATA_PRECISION
+        SELECT  COLUMN_NAME as Name,
+                DECODE ( NULLABLE, 'N' , 'NOT NULL' , ' ' ) as NULLABLE,
+                DATA_TYPE
+                    || DECODE
+                        (      ( NVL(CHAR_LENGTH,0) + NVL(DATA_PRECISION,0) ) ,
+                        0  ,
+                        '' ,
+                        '(' || ( NVL(CHAR_LENGTH,0) + NVL(DATA_PRECISION,0) ) 
+                            || DECODE
+                                ( DATA_SCALE , NULL , '' , 0 , '' , ',' || DATA_SCALE )
+                            || ')'
+                        )
+                    as Type
         FROM    USER_TAB_COLUMNS
         WHERE   TABLE_NAME = '$table_name'
     ");
 
+    if ( $debug ) { print "SQL here:====\n$desc_cmd\n====\n"; }
+
     my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh_ref , $desc_cmd );
     my $result_out = &format_result( $result_ref , $result_columninfo_ref );
 
-    my @column_headers = &get_col_headers( $dbh , $table_name );
+    my @column_names = &get_column_names( $dbh , $table_name );
 
-    return ( $result_out , @column_headers );
+    return ( $result_out , @column_names );
 
 }
 
+
+##########################################################################
+# sub loadcliopts
+#   input: none
+#   return: reference to hash of options given on CLI
+#   Used to load command line options
+##########################################################################
 sub loadcliopts {
     my %options;
     GetOptions (
