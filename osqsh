@@ -65,7 +65,8 @@ my $dbh = DBI->connect(
 my $term = Term::ReadLine->new('OSqsh');
 my @user_tables = &load_usertables( $dbh );
 my %nice_tabs = (
-    basic_cmd => [ 'select' , 'insert' , 'into' , 'create' , 'from' , 'where' , 'exists' , 'between' ],
+    basic_cmd => [ 'select' , 'insert' , 'into' , 'create' , 'from' , 'where' , 
+                    'group by' , 'having' , 'exists' , 'between' , 'min' , 'max ' ],
     data_type => [ 'varchar2' , 'number' , 'timestamp' ],
     sys_table => [ 'dual' ],
     sqlplscmd => [ 'describe' , 'exit' , 'quit' ],
@@ -81,10 +82,19 @@ my @multiline_cmd;
 my $prompt = "OSQSH> ";
 while ( defined ( my $command = $term->readline($prompt)) ) {
 
+    # rl_reset_after_signal();
+    # if ( $command =~ /TRAP-SIGINT/) { print "\n" unless $term->ReadLine eq 'Term::ReadLine::Perl'; # clear screen } 
+
     ## quit (^D also works)
     #
     if ( $command =~ /^(quit|exit)\W*/i ) {
         exit 0;
+
+    ## should be ctrl-c
+    #
+    } elsif ( $command =~ /^clear$/i ) {
+        @multiline_cmd = ();
+
 
     ## reproduce DESCRIBE sqlplus command
     #  add table column headers for tab completion
@@ -95,16 +105,13 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
         my @arguments = split /\s+/ , $2;
         foreach my $this_argument ( @arguments ) {
             last if ( $this_argument eq ';' );
-            # print "foreach $this_argument\n";
-            # if ( grep /^$this_argument$/i , @user_tables ) {
-                # print "has grep: $this_argument\n";
-                my ( $display_desc , @desc_return ) = &desc_table( $dbh , $this_argument );
-                push @{$nice_tabs{'usr_colmn'}} , @desc_return;
-                &load_completion( $term , \%nice_tabs);
-                print "$display_desc";
-           #  } else {
-           #      print "No such table $this_argument in USER_TABLES\n";
-           #  }
+            my ( $display_desc , @desc_return ) = &desc_table( $dbh , $this_argument );
+            push @{$nice_tabs{'usr_colmn'}} , @desc_return;
+            &load_completion( $term , \%nice_tabs);
+            if ( @arguments > 1 ) {
+                print "\n$this_argument:";
+            }
+            print "$display_desc";
         }
 
     ## any line that contains a semicolon will be executed (anything after the semicolon is ignored)
@@ -117,7 +124,6 @@ while ( defined ( my $command = $term->readline($prompt)) ) {
 
         my $full_cmd;
         if ( @multiline_cmd > 0 ) {
-            # print "YES!\n";
             push @multiline_cmd , $command;
             $full_cmd = join ' '  , @multiline_cmd;
             $term->addhistory("$full_cmd;");
@@ -197,6 +203,7 @@ sub load_rcfile {
         }
     }
 
+    close (RCFILE);
     return \%local_rc_vars;
 
 }
@@ -258,7 +265,6 @@ sub load_oracle_vals {
         ## don't bother to warn for CLI overrides
         #
         next if ( defined $cli_opts{$this_rcf_opt} );
-
         $oracle_settings{$this_rcf_opt} = $rcf_opts{$this_rcf_opt};
     }
 
@@ -316,38 +322,45 @@ sub load_completion {
     my @these_words;
     foreach my $this_key ( keys %$nice_tabs_ref ) {
         push @these_words , @{$local_tabs{$this_key}};
-        # print "adding @these_words\n";
     }
+
+    ## remove duplicates and add both upper and lower case
+    #
+    my %lc_keys;
+    map { $lc_keys{lc($_)} = '' } @these_words;
+    my @tab_words = ( keys %lc_keys , map { uc($_) } keys %lc_keys );
 
     ## hack
     #
     my @just_tables = @{$local_tabs{'usr_table'}};
     push @just_tables , map { lc($_) } @just_tables;
-    # print "just tables: @just_tables\n";
 
     ## hack
+    #  if we dont know about table columns, return whatever we have
     #
-    my @just_column = @{$local_tabs{'usr_colmn'}};
-    push @just_column , map { lc($_) } @just_column;
-    # print "just columns: @just_column\n";
+    my @just_columns = @{$local_tabs{'usr_colmn'}};
+    push @just_columns , map { lc($_) } @just_columns;
+    if ( @just_columns == 0 ) { @just_columns = @tab_words; }
 
-    my %lc_keys;
-    map { $lc_keys{lc($_)} = '' } @these_words;
-    my @tab_words = ( keys %lc_keys , map { uc($_) } keys %lc_keys );
-
-    ## proof of concept: only return table names when last full word is "from"
-    #  only return column names when last full word is "select"
-    #
-    # $term_ref->Attribs->{completion_function} = sub { return @tab_words; };
-    $term_ref->Attribs->{completion_function} = sub {
-        my ($text, $line, $start) = @_;
+    $term_ref->Attribs->{attempted_completion_function} = sub {
+        my ($text, $line, $start, $end) = @_;
         if ( $line =~ m/\s+FROM\s+\w*$/i ) {
-            return @just_tables;
+            $term_ref->Attribs->{completion_word} = [@just_tables];
         } elsif ( $line =~ m/SELECT\s+\w*$/i ) {
-            return @just_column;
+            $term_ref->Attribs->{completion_word} = [@just_columns];
+        } elsif ( $line =~ m/^des(c|cr|cri|crib|cribe)\s+/i ) {
+            $term_ref->Attribs->{completion_word} = [@just_tables];
         } else {
-            return @tab_words;
+            $term_ref->Attribs->{completion_word} = [@tab_words];
         }
+
+        my $front_bound = '';
+        if ( $text =~ s/^(\w+\.)// ) {
+            $front_bound = $1;
+        }
+        my @ret = $term->completion_matches($text, $term_ref->Attribs->{list_completion_function});
+        @ret = map { $front_bound.$_ } @ret;
+        return @ret;
     };
 
     return 0;
@@ -375,6 +388,8 @@ sub get_column_names {
 #   input: database handle, prepared sql statement handle
 #   return: reference to list of arrays containing information on table columns
 #   Get column information for a given table used in sql statement.
+#   It would be nice to return this info in a hash instead of an array,
+#   but it works better if this structure mirrors the array containing result set.
 ##########################################################################
 sub get_column_data {
 
@@ -393,7 +408,6 @@ sub get_column_data {
         $column_stuff[$count_columns]{'col_type'}  = $type_names[$count_columns];
         $column_stuff[$count_columns]{'precision'} = $precision[$count_columns];
         $column_stuff[$count_columns]{'scale'}     = $scale[$count_columns];
-        $column_stuff[$count_columns]{'scale2'}    = $scale[$count_columns];
         $column_stuff[$count_columns]{'maxwidth'}  = length($this_col_name); # will may be updated below
 
         my @right_justify_types = ( 'DECIMAL' , 'DATE' , 'NUMBER' , 'DOUBLE PRECISION' );
@@ -497,7 +511,7 @@ sub format_result {
     my $header_string = &gen_table_header( @column_info );
     $display_result .= "$header_string";
 
-    my $rv = 0;
+    my $row_count = 0;
     foreach my $this_row ( @$out_ref ) {
         my $count_columns = 0;
         foreach my $this_column ( @$this_row ) {
@@ -513,10 +527,10 @@ sub format_result {
             $display_result .=  " ";
             $count_columns++;
         }
-        $rv++;
+        $row_count++;
         $display_result .= "\n";
     }
-    $display_result .= "\n$rv rows selected.\n\n";
+    $display_result .= "\n$row_count rows selected.\n\n";
 
     return $display_result;
 }
@@ -549,15 +563,22 @@ sub desc_table {
         FROM    USER_TAB_COLUMNS
         WHERE   TABLE_NAME = '$table_name'
     ");
-
     if ( $debug ) { print "SQL here:====\n$desc_cmd\n====\n"; }
 
     my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh_ref , $desc_cmd );
-    my $result_out = &format_result( $result_ref , $result_columninfo_ref );
 
-    my @column_names = &get_column_names( $dbh , $table_name );
-
-    return ( $result_out , @column_names );
+    ## print warning if no rows returned
+    #
+    my $row_count = @$result_ref;
+    if ( $row_count == 0 ) {
+        my $nothing_to_see = "\nNo table $table_name in USER_TAB_COLUMNS\n\n";
+        my @nonames = ();
+        return ( $nothing_to_see , @nonames );
+    } else {
+        my $result_out = &format_result( $result_ref , $result_columninfo_ref );
+        my @column_names = &get_column_names( $dbh , $table_name );
+        return ( $result_out , @column_names );
+    }
 
 }
 
