@@ -66,7 +66,8 @@ my $term = Term::ReadLine->new('OSqsh');
 my @user_tables = &load_usertables( $dbh );
 my %nice_tabs = (
     basic_cmd => [ 'select' , 'insert' , 'into' , 'create' , 'from' , 'where' , 
-                    'group by' , 'having' , 'exists' , 'between' , 'min' , 'max ' ],
+                    'group by' , 'having' , 'exists' , 'order by' , 
+                    'between' , 'min' , 'max ' , 'like' ],
     data_type => [ 'varchar2' , 'number' , 'timestamp' ],
     sys_table => [ 'dual' ],
     sqlplscmd => [ 'describe' , 'exit' , 'quit' ],
@@ -78,83 +79,12 @@ my %nice_tabs = (
 
 ## now run the prompt
 #
-my @multiline_cmd;
 my $prompt = "OSQSH> ";
-while ( defined ( my $command = $term->readline($prompt)) ) {
-
-    # rl_reset_after_signal();
-    # if ( $command =~ /TRAP-SIGINT/) { print "\n" unless $term->ReadLine eq 'Term::ReadLine::Perl'; # clear screen } 
-
-    ## quit (^D also works)
-    #
-    if ( $command =~ /^(quit|exit)\W*/i ) {
-        exit 0;
-
-    ## should be ctrl-c
-    #
-    } elsif ( $command =~ /^clear$/i ) {
-        @multiline_cmd = ();
+&do_prompt( $dbh , $term , $prompt , \%nice_tabs );
 
 
-    ## reproduce DESCRIBE sqlplus command
-    #  add table column headers for tab completion
-    #
-    } elsif ( $command =~ /^des(c|cr|cri|crib|cribe)\s+(.*)$/i ) {
-
-        my @user_tables = &load_usertables( $dbh );
-        my @arguments = split /\s+/ , $2;
-        foreach my $this_argument ( @arguments ) {
-            last if ( $this_argument eq ';' );
-            my ( $display_desc , @desc_return ) = &desc_table( $dbh , $this_argument );
-            push @{$nice_tabs{'usr_colmn'}} , @desc_return;
-            &load_completion( $term , \%nice_tabs);
-            if ( @arguments > 1 ) {
-                print "\n$this_argument:";
-            }
-            print "$display_desc";
-        }
-
-    ## any line that contains a semicolon will be executed (anything after the semicolon is ignored)
-    #
-    } elsif ( $command =~ /;/ ) {
-
-        ## strip semicolon and anything after
-        #
-        $command =~ s/;.*$//;
-
-        my $full_cmd;
-        if ( @multiline_cmd > 0 ) {
-            push @multiline_cmd , $command;
-            $full_cmd = join ' '  , @multiline_cmd;
-            $term->addhistory("$full_cmd;");
-            @multiline_cmd = ();
-        } else {
-            $full_cmd = $command;
-        }
-
-        my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh , $full_cmd );
-        if ( ( ref($result_ref) eq 'ARRAY' ) and ( ref($result_columninfo_ref) eq 'ARRAY' ) ) {
-            my $result_out = &format_result( $result_ref , $result_columninfo_ref );
-            print "$result_out";
-        } else {
-            if ( $debug ) { print "\$result_ref: $result_ref\n"; }
-        }
-
-    ## anything else is considered a multiline command
-    #
-    } else {
-        push @multiline_cmd , $command;
-    }
-
-    ## show the buffer if anything is in it
-    #
-    if ( @multiline_cmd > 0 ) {
-        my $display_multiline_cmd = join "\n       " , @multiline_cmd;
-        print "       $display_multiline_cmd\n";
-    }
-
-}
-
+## end
+#
 print "\n";
 END {
     $dbh->disconnect if defined($dbh);
@@ -344,7 +274,9 @@ sub load_completion {
 
     $term_ref->Attribs->{attempted_completion_function} = sub {
         my ($text, $line, $start, $end) = @_;
-        if ( $line =~ m/\s+FROM\s+\w*$/i ) {
+        if ( $line =~ m/^\s*$/i ) {
+            $term_ref->Attribs->{completion_word} = [ ( "\t" )];
+        } elsif ( $line =~ m/\s+FROM\s+\w*$/i ) {
             $term_ref->Attribs->{completion_word} = [@just_tables];
         } elsif ( $line =~ m/SELECT\s+\w*$/i ) {
             $term_ref->Attribs->{completion_word} = [@just_columns];
@@ -433,22 +365,25 @@ sub get_column_data {
 sub gen_table_header {
 
     my @column_stuff = @_;
-    my $header = '';
+
+    my $header = "\n";
+    my $separator_line = '';
     my $count_columns = 0;
-    my @separators;
-    $header .= "\n";
     foreach my $this_column ( @column_stuff ) {
 
         my $width = $column_stuff[$count_columns]{'maxwidth'};
-        for ( my $i = 1 ; $i <= $width ; $i++ ) { $separators[$count_columns] .= '-'; }
+        $separator_line .= '-' x $width . ' ';
+
         $header .= sprintf( "%-${width}s", ${$this_column}{'col_name'});
         $header .= ' ';
         $count_columns++;
     }
-    $header .= "\n";
 
-    foreach my $this_line ( @separators ) { $header .= "$this_line "; }
-    $header .= "\n";
+    ## remove trailing whitespace from both lines before combining
+    #
+    $header         =~ s/\s^//;
+    $separator_line =~ s/\s^//;
+    $header .= "\n$separator_line\n";
 
     return $header;
 }
@@ -517,14 +452,17 @@ sub format_result {
         foreach my $this_column ( @$this_row ) {
 
             my $col_width = $column_info[$count_columns]{'maxwidth'};
-            my $justify = "%-";
+
+            my $justify;
             if ( $column_info[$count_columns]{'justify'} eq 'right' ) {
                 $justify = "%";
+            } else {
+                $justify = "%-";
             }
 
             if ( ! defined $this_column ) { $this_column = '(NULL)'; }
             $display_result .= sprintf( "$justify"."$col_width"."s", $this_column);
-            $display_result .=  " ";
+            $display_result .=  ' ';
             $count_columns++;
         }
         $row_count++;
@@ -569,11 +507,8 @@ sub desc_table {
 
     ## print warning if no rows returned
     #
-    my $row_count = @$result_ref;
-    if ( $row_count == 0 ) {
-        my $nothing_to_see = "\nNo table $table_name in USER_TAB_COLUMNS\n\n";
-        my @nonames = ();
-        return ( $nothing_to_see , @nonames );
+    if ( @$result_ref == 0 ) {
+        return ( "\nNo table $table_name in USER_TAB_COLUMNS\n\n" , () );
     } else {
         my $result_out = &format_result( $result_ref , $result_columninfo_ref );
         my @column_names = &get_column_names( $dbh , $table_name );
@@ -598,4 +533,95 @@ sub loadcliopts {
         'oracle_sid=s'  => \$options{'ORACLE_SID'},
     );
     return \%options;
+}
+
+
+##########################################################################
+# sub do_prompt
+#   input: reference to term handle, prompt (string)
+#   return: none
+#   This is the main loop.
+##########################################################################
+sub do_prompt {
+
+    my ( $dbh_ref , $term_ref , $prompt_string , $nicetabs_ref ) = @_;
+
+    my @multiline_cmd = ();
+    while ( defined ( my $command = $term_ref->readline($prompt_string)) ) {
+
+        ## quit (^D also works)
+        #
+        if ( $command =~ /^(quit|exit)\W*/i ) {
+            exit 0;
+
+        ## should be ctrl-c, but need to hijack $SIG{INT}
+        #
+        } elsif ( $command =~ /^clear$/i ) {
+            @multiline_cmd = ();
+
+
+        ## reproduce DESCRIBE sqlplus command
+        #  add table column headers for tab completion
+        #
+        } elsif ( $command =~ /^des(c|cr|cri|crib|cribe)\s+(.*)$/i ) {
+
+            my @user_tables = &load_usertables( $dbh_ref );
+            my @arguments = split /\s+/ , $2;
+            foreach my $this_argument ( @arguments ) {
+                last if ( $this_argument eq ';' );
+                my ( $display_desc , @desc_return ) = &desc_table( $dbh_ref , $this_argument );
+                push @{$$nicetabs_ref{'usr_colmn'}} , @desc_return;
+                &load_completion( $term , $nicetabs_ref );
+                if ( @arguments > 1 ) {
+                    print "\n$this_argument:";
+                }
+                print "$display_desc";
+            }
+
+        ## any line that contains a semicolon will be executed (anything after the semicolon is ignored)
+        #
+        } elsif ( $command =~ /;/ ) {
+
+            ## strip semicolon and anything after
+            #
+            $command =~ s/;.*$//;
+
+            my $full_cmd;
+            if ( @multiline_cmd > 0 ) {
+                push @multiline_cmd , $command;
+                my $display_multiline_cmd = join "\n       " , @multiline_cmd;
+                print "\n       $display_multiline_cmd\n";
+                $full_cmd = join ' '  , @multiline_cmd;
+                $full_cmd =~ s/^\s+//;
+                $full_cmd =~ s/\s+$//;
+                $full_cmd =~ s/\s+/ /g;
+                $term->addhistory("$full_cmd;");
+                @multiline_cmd = ();
+            } else {
+                $full_cmd = $command;
+            }
+
+            my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh_ref , $full_cmd );
+            if ( ( ref($result_ref) eq 'ARRAY' ) and ( ref($result_columninfo_ref) eq 'ARRAY' ) ) {
+                my $result_out = &format_result( $result_ref , $result_columninfo_ref );
+                print "$result_out";
+            } else {
+                if ( $debug ) { print "\$result_ref: $result_ref\n"; }
+            }
+
+        ## anything else is considered part of a multiline command
+        #
+        } else {
+            push @multiline_cmd , $command;
+        }
+
+        ## show the buffer if anything is in it
+        #
+        if ( @multiline_cmd > 0 ) {
+            my $display_multiline_cmd = join "\n       " , @multiline_cmd;
+            print "\n       $display_multiline_cmd\n";
+        }
+
+    }
+
 }
