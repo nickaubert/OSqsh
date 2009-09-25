@@ -546,6 +546,8 @@ sub do_prompt {
 
     my ( $dbh_ref , $term_ref , $prompt_string , $nicetabs_ref ) = @_;
 
+    my $std_fh = *STDOUT;
+
     my @multiline_cmd = ();
     while ( defined ( my $command = $term_ref->readline($prompt_string)) ) {
 
@@ -584,11 +586,32 @@ sub do_prompt {
 
             ## strip semicolon and anything after
             #
-            $command =~ s/;.*$//;
+            my $output_fh;
+
+            # $command =~ s/;.*$//;
+            my $first_part;
+            my $last_part;
+            $command =~ m/^([^;]*);\s*\|?(.*)/;
+            $first_part = $1;
+            $last_part = $2;
+            if ( length($last_part) > 0 ) {
+                print "At last: $last_part\n";
+                open( SHELL , "|$last_part" );
+                $output_fh = \*SHELL;
+            } else {
+
+                $output_fh = $std_fh;
+            }
+
+            # my @command_parts = split /;/ , $command;
+            # foreach my $this_part ( @command_parts ) { print "part: $this_part\n"; }
+            # my $part_one = $command_parts[0];
+
+            # $command =~ s/;.*$//;
 
             my $full_cmd;
             if ( @multiline_cmd > 0 ) {
-                push @multiline_cmd , $command;
+                push @multiline_cmd , $first_part;
                 my $display_multiline_cmd = join "\n       " , @multiline_cmd;
                 print "\n       $display_multiline_cmd\n";
                 $full_cmd = join ' '  , @multiline_cmd;
@@ -598,13 +621,22 @@ sub do_prompt {
                 $term->addhistory("$full_cmd;");
                 @multiline_cmd = ();
             } else {
-                $full_cmd = $command;
+                $full_cmd = $first_part;
             }
 
             my ( $result_ref , $result_columninfo_ref ) = &run_sql_command( $dbh_ref , $full_cmd );
             if ( ( ref($result_ref) eq 'ARRAY' ) and ( ref($result_columninfo_ref) eq 'ARRAY' ) ) {
+
                 my $result_out = &format_result( $result_ref , $result_columninfo_ref );
-                print "$result_out";
+
+                print $output_fh "$result_out";
+                # print "$result_out";
+
+                if ( $output_fh ne $std_fh ) {
+                    print "closing\n";
+                    close $output_fh;
+                }
+
             } else {
                 if ( $debug ) { print "\$result_ref: $result_ref\n"; }
             }
@@ -612,7 +644,9 @@ sub do_prompt {
         ## anything else is considered part of a multiline command
         #
         } else {
-            push @multiline_cmd , $command;
+            if ( ( $command ne "\n" ) and ( @multiline_cmd > 0 ) ) {
+                push @multiline_cmd , $command;
+            }
         }
 
         ## show the buffer if anything is in it
