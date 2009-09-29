@@ -167,6 +167,12 @@ sub load_oracle_vals {
         $oracle_settings{$this_cli_opt} = $cli_opts{$this_cli_opt};
     }
 
+    ## as a special condition, warn if the user but not pass was given on cli
+    #
+    if ( ( defined $oracle_settings{'ORACLE_USER'} ) and ( ! defined $oracle_settings{'ORACLE_PASS'} ) ) {
+        print "User given on CLI but no pass!\n";
+    }
+
     ## second, load environment variables into settings
     #  if they haven't already been defined on the cli
     #
@@ -325,29 +331,46 @@ sub get_column_names {
 ##########################################################################
 sub get_column_data {
 
+    my ( $dbh_ref , $sth_ref ) = @_;
+
     ## collect column data
     #  there MUST be a better way to do this
     #
-    my ( $dbh_ref , $sth_ref ) = @_;
-    my @type_names   = map { scalar $dbh_ref->type_info($_)->{TYPE_NAME} } @{ $sth_ref->{TYPE} };
     my @column_names = @{ $sth_ref->{NAME}      };
     my @precision    = @{ $sth_ref->{PRECISION} };
     my @scale        = @{ $sth_ref->{SCALE}     };
+    my @type_num     = @{ $sth_ref->{TYPE}      };
     my @column_stuff;
     my $count_columns = 0;
     foreach my $this_col_name ( @column_names ) {
+
         $column_stuff[$count_columns]{'col_name'}  = $this_col_name;
-        $column_stuff[$count_columns]{'col_type'}  = $type_names[$count_columns];
         $column_stuff[$count_columns]{'precision'} = $precision[$count_columns];
         $column_stuff[$count_columns]{'scale'}     = $scale[$count_columns];
-        $column_stuff[$count_columns]{'maxwidth'}  = length($this_col_name); # will may be updated below
+        $column_stuff[$count_columns]{'maxwidth'}  = length($this_col_name); # minimum width
 
+        ## column type by name in eval because DBD may not support all column types
+        #  start by adding known type that confuses DBD but query still succeeds
+        #
+        if ( $type_num[$count_columns] == 95 ) {
+            $column_stuff[$count_columns]{'col_type'} = 'TIMESTAMP W/TZ';
+        } else {
+            eval { $column_stuff[$count_columns]{'col_type'} = $dbh_ref->type_info($type_num[$count_columns])->{TYPE_NAME}; };
+            if ($@) {
+                $column_stuff[$count_columns]{'col_type'} = "TYPE_$type_num[$count_columns]";
+                $column_stuff[$count_columns]{'col_fail'} = $type_num[$count_columns];
+            }
+        }
+
+        ## column left or right justify
+        #
         my @right_justify_types = ( 'DECIMAL' , 'DATE' , 'NUMBER' , 'DOUBLE PRECISION' );
-        if ( grep m/$type_names[$count_columns]/ , @right_justify_types ) {
+        if ( grep m/$column_stuff[$count_columns]{'col_type'}/ , @right_justify_types ) {
             $column_stuff[$count_columns]{'justify'} = 'right';
         } else {
             $column_stuff[$count_columns]{'justify'} = 'left';
         }
+
         $count_columns++;
     }
 
@@ -399,10 +422,39 @@ sub run_sql_command {
 
     my ( $dbh_ref , $sql_cmd ) = @_;
 
-    my $sth_ref = $dbh_ref->prepare($sql_cmd) or print "\nSQL fail!\n\n";
+    if ( $debug ) { print "Prepare to prepare!\n"; }
+    my $sth_ref;
+    eval {
+        $sth_ref = $dbh_ref->prepare($sql_cmd) or print "\nSQL fail!\n\n";
+    };
+    warn "stuff breaking in prepare: $dbh->errstr" if ($@);
+    if ( $debug ) { print "Prepared!\n"; }
     if ( $sth_ref ) {
-        my $ary_ref = $dbh->selectall_arrayref($sql_cmd);
+
         my $ary_info_ref = &get_column_data ( $dbh_ref , $sth_ref );
+
+        ## if any cols have col_fail set to non-zero, the query will fail
+        #
+        my $breaks_driver = 0;
+        my $col_count = 1;
+        foreach my $this_col ( @$ary_info_ref ) {
+            my $failure = $$this_col{'col_fail'};
+            if ( defined $failure ) {
+                print "Unable to process $$this_col{'col_name'} (col $col_count)\n";
+                $breaks_driver += 1;
+            }
+            $col_count++;
+        }
+
+        if ( $breaks_driver != 0 ) { return ( \"This is not an array reference" , \"Neither is this" ); }
+
+        if ( $debug ) { print "Prepare to select!\n"; }
+        my $ary_ref;
+        eval {
+            $ary_ref = $dbh->selectall_arrayref($sql_cmd);
+        };
+        warn "stuff breaking in select: $dbh->errstr" if ($@);
+        if ( $debug ) { print "selectd!\n"; }
         return ( $ary_ref , $ary_info_ref );
     } else {
         return ( \"This is not an array reference" , \"Neither is this" );
@@ -525,6 +577,7 @@ sub desc_table {
 #   Used to load command line options
 ##########################################################################
 sub loadcliopts {
+
     my %options;
     GetOptions (
         'debug'         => \$options{'debug'},
@@ -532,6 +585,19 @@ sub loadcliopts {
         'oracle_pass=s' => \$options{'ORACLE_PASS'},
         'oracle_sid=s'  => \$options{'ORACLE_SID'},
     );
+
+    ## check for user/pass format if not passed explicitly
+    #
+    if ( ( ! defined $options{'ORACLE_USER'} ) and ( ! defined $options{'ORACLE_PASS'} ) ) {
+        foreach my $this_arg ( @ARGV ) {
+            if ( $this_arg =~ m/^(\w+)\/(\w+)$/ ) {
+                $options{'ORACLE_USER'} = $1;
+                $options{'ORACLE_PASS'} = $2;
+            }
+            last;
+        }
+    }
+
     return \%options;
 }
 
@@ -568,7 +634,9 @@ sub do_prompt {
         } elsif ( $command =~ /^des(c|cr|cri|crib|cribe)\s+(.*)$/i ) {
 
             my @user_tables = &load_usertables( $dbh_ref );
-            my @arguments = split /\s+/ , $2;
+            my $desc_stuff = $2;
+            $desc_stuff =~ s/;\s*$//;
+            my @arguments = split /\s+/ , $desc_stuff;
             foreach my $this_argument ( @arguments ) {
                 last if ( $this_argument eq ';' );
                 my ( $display_desc , @desc_return ) = &desc_table( $dbh_ref , $this_argument );
@@ -586,16 +654,17 @@ sub do_prompt {
 
             ## strip semicolon and anything after
             #
+            # $command =~ s/;.*$//;
+
             my $output_fh;
 
-            # $command =~ s/;.*$//;
             my $first_part;
             my $last_part;
             $command =~ m/^([^;]*);\s*\|?(.*)/;
             $first_part = $1;
             $last_part = $2;
             if ( length($last_part) > 0 ) {
-                print "At last: $last_part\n";
+                # print "At last: $last_part\n";
                 open( SHELL , "|$last_part" );
                 $output_fh = \*SHELL;
             } else {
@@ -644,7 +713,7 @@ sub do_prompt {
         ## anything else is considered part of a multiline command
         #
         } else {
-            if ( ( $command ne "\n" ) and ( @multiline_cmd > 0 ) ) {
+            if ( $command ne "\n" ) {
                 push @multiline_cmd , $command;
             }
         }
